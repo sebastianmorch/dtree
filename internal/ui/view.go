@@ -41,6 +41,9 @@ func (m *Model) treeHeader() string {
 	if m.showAll {
 		scope = "all containers"
 	}
+	if f := m.tree.Filter(); f != "" {
+		scope += " · filter: " + f
+	}
 	conn := styleGreen.Render("●") + styleDim.Render(" connected")
 	if !m.connected {
 		conn = styleRed.Render("●") + styleDim.Render(" disconnected")
@@ -49,6 +52,10 @@ func (m *Model) treeHeader() string {
 }
 
 func (m *Model) treeFooter() string {
+	if m.filtering {
+		return ansi.Truncate("/"+m.tree.Filter()+"█", m.width, "…") +
+			styleDim.Render("  enter keep · esc clear · ↑/↓ move")
+	}
 	if m.status != "" {
 		st := styleDim
 		if m.statusErr {
@@ -56,7 +63,10 @@ func (m *Model) treeFooter() string {
 		}
 		return ansi.Truncate(st.Render(m.status), m.width, "…")
 	}
-	hints := "j/k move · h/l fold · L logs · i inspect · s shell · a all · r refresh · ? help · q quit"
+	hints := "j/k move · h/l fold · / filter · L logs · i inspect · s shell · a all · r refresh · ? help · q quit"
+	if m.tree.Filter() != "" {
+		hints = "esc clear filter · " + hints
+	}
 	return styleDim.Render(ansi.Truncate(hints, m.width, "…"))
 }
 
@@ -104,6 +114,8 @@ func (m *Model) treeBody(height int) []string {
 		return []string{styleError.Render("Cannot list containers: " + m.listErr.Error())}
 	case !m.loaded:
 		return []string{styleDim.Render("Loading…")}
+	case len(m.tree.Rows()) == 0 && m.tree.Filter() != "":
+		return []string{styleDim.Render(fmt.Sprintf("No containers match %q.", m.tree.Filter()))}
 	case len(m.tree.Rows()) == 0:
 		if m.showAll {
 			return []string{styleDim.Render("No containers.")}
@@ -134,7 +146,7 @@ func (m *Model) treeBody(height int) []string {
 		selected := i == cursor
 		var line string
 		if r.IsProject() {
-			line = m.projectRow(m.tree.Project(r), projWidth, selected)
+			line = m.projectRow(r, projWidth, selected)
 		} else {
 			line = containerRow(m.tree.Container(r), cols, selected)
 		}
@@ -147,12 +159,16 @@ func (m *Model) treeBody(height int) []string {
 	return out
 }
 
-func (m *Model) projectRow(p *tree.Project, nameWidth int, selected bool) string {
+func (m *Model) projectRow(r tree.Row, nameWidth int, selected bool) string {
+	p := m.tree.Project(r)
 	arrow := "▾"
 	if m.tree.IsCollapsed(p.Name) {
 		arrow = "▸"
 	}
 	count := fmt.Sprintf("%d/%d running", p.Running(), len(p.Containers))
+	if m.tree.Filter() != "" {
+		count = fmt.Sprintf("%d/%d matching", m.tree.Matching(r), len(p.Containers))
+	}
 	if selected {
 		return arrow + " " + padRight(p.Name, nameWidth) + "  " + count
 	}
@@ -223,6 +239,8 @@ var helpSections = []struct {
 		{"h / ←", "collapse project / go to parent"},
 		{"enter / space", "toggle project · logs on container"},
 		{"g / G", "top / bottom"},
+		{"/", "filter by container or project name"},
+		{"esc", "clear filter"},
 		{"L", "logs"},
 		{"i", "inspect"},
 		{"s", "shell (bash, falls back to sh)"},

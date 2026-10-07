@@ -107,6 +107,8 @@ func press(t *testing.T, m *Model, keys ...string) {
 			msg = tea.KeyMsg{Type: tea.KeyEnter}
 		case "esc":
 			msg = tea.KeyMsg{Type: tea.KeyEsc}
+		case "backspace":
+			msg = tea.KeyMsg{Type: tea.KeyBackspace}
 		case "down":
 			msg = tea.KeyMsg{Type: tea.KeyDown}
 		case "up":
@@ -351,5 +353,65 @@ func TestViewerWrap(t *testing.T) {
 	rows := strings.Split(ansi.Strip(v.view()), "\n")
 	if len(rows) != 5 || rows[1] != strings.Repeat("x", 10) {
 		t.Fatalf("wrapped view %q", rows)
+	}
+}
+
+func TestFilterByName(t *testing.T) {
+	m, f := setup(t)
+	f.running = append(f.running, tree.Container{ID: "k1", Name: "jk-tool", Image: "x", State: "running", Status: "Up"})
+	press(t, m, "r")
+
+	press(t, m, "/", "d", "b")
+	s := screen(m)
+	if !m.filtering || !strings.Contains(s, "/db█") || !strings.Contains(s, "filter: db") {
+		t.Fatalf("filter input not shown:\n%s", s)
+	}
+	if strings.Contains(s, "buildkit") || !strings.Contains(s, "1/2 matching") {
+		t.Fatalf("filter not applied:\n%s", s)
+	}
+	if c := m.tree.SelectedContainer(); c == nil || c.ID != "a2" {
+		t.Fatalf("cursor should jump to first match, got %+v", c)
+	}
+
+	press(t, m, "enter", "L") // keep filter, act on the match
+	if m.mode != modeViewer || m.target.ID != "a2" {
+		t.Fatal("L after filtering should open logs for the match")
+	}
+	press(t, m, "q")
+	if m.tree.Filter() != "db" {
+		t.Fatal("filter should persist after closing the viewer")
+	}
+
+	press(t, m, "esc")
+	if m.tree.Filter() != "" || !strings.Contains(screen(m), "buildkit") {
+		t.Fatal("esc should clear the filter")
+	}
+
+	press(t, m, "/", "j", "k") // vim keys are text while typing
+	if m.tree.Filter() != "jk" {
+		t.Fatalf("filter = %q, want jk", m.tree.Filter())
+	}
+	press(t, m, "backspace", "backspace", "x", "y", "z")
+	if !strings.Contains(screen(m), `No containers match "xyz"`) {
+		t.Fatalf("empty result message missing:\n%s", screen(m))
+	}
+	press(t, m, "esc")
+	if m.filtering || m.tree.Filter() != "" {
+		t.Fatal("esc while typing should clear and leave filter mode")
+	}
+}
+
+func TestMultiRuneInput(t *testing.T) {
+	m, _ := setup(t)
+	press(t, m, "/")
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("bu")})
+	m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+	if m.tree.Filter() != "bu " {
+		t.Fatalf("filter = %q, want %q", m.tree.Filter(), "bu ")
+	}
+	press(t, m, "esc", "j", "L", "/")
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("oops 3"), Paste: true})
+	if m.viewer.input != "oops 3" {
+		t.Fatalf("search input = %q", m.viewer.input)
 	}
 }

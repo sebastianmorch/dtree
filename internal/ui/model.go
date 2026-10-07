@@ -84,6 +84,7 @@ type Model struct {
 	mode          mode
 	viewer        *viewer
 	help          bool
+	filtering     bool // typing a filter query after /
 
 	status    string
 	statusErr bool
@@ -131,7 +132,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		return m, m.handleKey(msg.String())
+		return m, m.handleKey(msg)
 
 	case containersMsg:
 		if msg.all != m.showAll {
@@ -220,7 +221,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) handleKey(key string) tea.Cmd {
+func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
+	key := msg.String()
 	if m.help {
 		if key == "ctrl+c" {
 			return m.quit()
@@ -229,7 +231,7 @@ func (m *Model) handleKey(key string) tea.Cmd {
 		return nil
 	}
 	if m.mode == modeViewer {
-		switch m.viewer.update(key) {
+		switch m.viewer.updateKey(msg) {
 		case actQuit:
 			return m.quit()
 		case actClose:
@@ -242,10 +244,17 @@ func (m *Model) handleKey(key string) tea.Cmd {
 		}
 		return nil
 	}
+	if m.filtering {
+		return m.handleFilterKey(msg)
+	}
 
 	switch key {
 	case "q", "ctrl+c":
 		return m.quit()
+	case "/":
+		m.filtering = true
+	case "esc":
+		m.tree.SetFilter("")
 	case "j", "down":
 		m.tree.Down()
 	case "k", "up":
@@ -285,6 +294,68 @@ func (m *Model) handleKey(key string) tea.Cmd {
 		m.help = true
 	}
 	return nil
+}
+
+// handleFilterKey edits the filter query; the tree filters as you type.
+// Enter keeps the filter, Esc clears it, arrows still move the cursor.
+func (m *Model) handleFilterKey(msg tea.KeyMsg) tea.Cmd {
+	q := m.tree.Filter()
+	switch msg.String() {
+	case "ctrl+c":
+		return m.quit()
+	case "enter":
+		m.filtering = false
+		return nil
+	case "esc":
+		m.filtering = false
+		m.tree.SetFilter("")
+		return nil
+	case "down", "ctrl+n":
+		m.tree.Down()
+		return nil
+	case "up", "ctrl+p":
+		m.tree.Up()
+		return nil
+	case "backspace":
+		r := []rune(q)
+		if len(r) == 0 {
+			m.filtering = false
+			return nil
+		}
+		q = string(r[:len(r)-1])
+	case "ctrl+u":
+		q = ""
+	default:
+		text, ok := typedText(msg)
+		if !ok {
+			return nil
+		}
+		q += text
+	}
+	m.tree.SetFilter(q)
+	m.tree.FirstContainer()
+	return nil
+}
+
+// typedText returns the printable text of a key press. Fast typing and
+// pastes can deliver several runes in one message.
+func typedText(msg tea.KeyMsg) (string, bool) {
+	if msg.Alt {
+		return "", false
+	}
+	switch msg.Type {
+	case tea.KeySpace:
+		return " ", true
+	case tea.KeyRunes:
+		var b strings.Builder
+		for _, r := range msg.Runes {
+			if r >= 0x20 && r != 0x7f {
+				b.WriteRune(r)
+			}
+		}
+		return b.String(), b.Len() > 0
+	}
+	return "", false
 }
 
 func (m *Model) quit() tea.Cmd {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
 	"dtree/internal/docker"
@@ -176,6 +177,18 @@ func (v *viewer) gotoBottom() {
 	if v.kind == viewLogs {
 		v.follow = true
 	}
+}
+
+// updateKey handles a key press, taking typed text directly from the message
+// while searching so multi-rune input (fast typing, paste) is not dropped.
+func (v *viewer) updateKey(msg tea.KeyMsg) viewerAction {
+	if v.searching {
+		if text, ok := typedText(msg); ok {
+			v.input += text
+			return actNone
+		}
+	}
+	return v.update(msg.String())
 }
 
 func (v *viewer) update(key string) viewerAction {

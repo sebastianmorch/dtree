@@ -138,10 +138,17 @@ type Tree struct {
 	collapsed map[string]bool
 	rows      []Row
 	cursor    int
+
+	// While a filter is active, matching projects start expanded and fold
+	// state lives in filterCollapsed, so the user's own collapse state is
+	// back unchanged once the filter is cleared.
+	filter          string
+	filterCollapsed map[string]bool
+	matches         map[int]int // project index -> number of matching containers
 }
 
 func New() *Tree {
-	return &Tree{collapsed: map[string]bool{}}
+	return &Tree{collapsed: map[string]bool{}, filterCollapsed: map[string]bool{}}
 }
 
 func (t *Tree) Projects() []Project { return t.projects }
@@ -157,7 +164,48 @@ func (t *Tree) Container(r Row) *Container {
 	return &t.projects[r.Project].Containers[r.Container]
 }
 
-func (t *Tree) IsCollapsed(project string) bool { return t.collapsed[project] }
+func (t *Tree) IsCollapsed(project string) bool { return t.folds()[project] }
+
+func (t *Tree) folds() map[string]bool {
+	if t.filter != "" {
+		return t.filterCollapsed
+	}
+	return t.collapsed
+}
+
+func (t *Tree) Filter() string { return t.filter }
+
+// Matching is the number of containers in the row's project that match the
+// active filter.
+func (t *Tree) Matching(r Row) int { return t.matches[r.Project] }
+
+// SetFilter shows only containers whose shown name, container name or
+// project name contains q (case-insensitive). An empty q clears the filter.
+func (t *Tree) SetFilter(q string) {
+	if q == t.filter {
+		return
+	}
+	t.filter = q
+	t.filterCollapsed = map[string]bool{}
+	t.update(nil)
+}
+
+// FirstContainer moves the cursor to the first container row, if any.
+func (t *Tree) FirstContainer() {
+	for i, r := range t.rows {
+		if !r.IsProject() {
+			t.cursor = i
+			return
+		}
+	}
+}
+
+func (t *Tree) matchesFilter(p Project, c Container) bool {
+	q := strings.ToLower(t.filter)
+	return strings.Contains(strings.ToLower(p.Name), q) ||
+		strings.Contains(strings.ToLower(c.DisplayName()), q) ||
+		strings.Contains(strings.ToLower(c.Name), q)
+}
 
 // Selected returns the row under the cursor.
 func (t *Tree) Selected() (Row, bool) {
@@ -181,14 +229,21 @@ func (t *Tree) SelectedContainer() *Container {
 // If the selected container disappeared, the cursor moves to its neighbour in
 // the same project, then to the project row, then to the nearest row.
 func (t *Tree) Set(cs []Container) {
+	t.update(func() { t.projects = Group(cs) })
+}
+
+// update applies change (if any), rebuilds the rows and restores the cursor.
+func (t *Tree) update(change func()) {
 	prevCursor := t.cursor
-	prevKey, prevContainerIdx := key{}, 0
+	prevKey, prevPos := key{}, 0 // prevPos: position below the project row
 	if r, ok := t.Selected(); ok {
 		prevKey = t.keyOf(r)
-		prevContainerIdx = r.Container
+		prevPos = t.cursor - t.find(key{project: prevKey.project}) - 1
 	}
 
-	t.projects = Group(cs)
+	if change != nil {
+		change()
+	}
 	t.rebuild()
 
 	if len(t.rows) == 0 {
@@ -201,15 +256,23 @@ func (t *Tree) Set(cs []Container) {
 	}
 	if prevKey.containerID != "" {
 		if i := t.find(key{project: prevKey.project}); i >= 0 {
-			p := t.projects[t.rows[i].Project]
 			t.cursor = i
-			if !t.collapsed[p.Name] && len(p.Containers) > 0 {
-				t.cursor = i + 1 + min(prevContainerIdx, len(p.Containers)-1)
+			if n := t.containerRowsAfter(i); n > 0 {
+				t.cursor = i + 1 + min(prevPos, n-1)
 			}
 			return
 		}
 	}
 	t.cursor = min(prevCursor, len(t.rows)-1)
+}
+
+// containerRowsAfter counts the container rows directly below project row i.
+func (t *Tree) containerRowsAfter(i int) int {
+	n := 0
+	for j := i + 1; j < len(t.rows) && !t.rows[j].IsProject(); j++ {
+		n++
+	}
+	return n
 }
 
 func (t *Tree) Down() {
@@ -257,15 +320,15 @@ func (t *Tree) Toggle() {
 	if !ok || !r.IsProject() {
 		return
 	}
-	t.setCollapsed(r.Project, !t.collapsed[t.projects[r.Project].Name])
+	t.setCollapsed(r.Project, !t.folds()[t.projects[r.Project].Name])
 }
 
 func (t *Tree) setCollapsed(project int, collapsed bool) {
 	name := t.projects[project].Name
 	if collapsed {
-		t.collapsed[name] = true
+		t.folds()[name] = true
 	} else {
-		delete(t.collapsed, name)
+		delete(t.folds(), name)
 	}
 	t.rebuild()
 	t.cursor = t.find(key{project: name})
@@ -273,12 +336,24 @@ func (t *Tree) setCollapsed(project int, collapsed bool) {
 
 func (t *Tree) rebuild() {
 	t.rows = t.rows[:0]
+	t.matches = map[int]int{}
+	folds := t.folds()
 	for pi, p := range t.projects {
-		t.rows = append(t.rows, Row{Project: pi, Container: -1})
-		if t.collapsed[p.Name] {
+		var visible []int
+		for ci, c := range p.Containers {
+			if t.filter == "" || t.matchesFilter(p, c) {
+				visible = append(visible, ci)
+			}
+		}
+		if t.filter != "" && len(visible) == 0 {
 			continue
 		}
-		for ci := range p.Containers {
+		t.matches[pi] = len(visible)
+		t.rows = append(t.rows, Row{Project: pi, Container: -1})
+		if folds[p.Name] {
+			continue
+		}
+		for _, ci := range visible {
 			t.rows = append(t.rows, Row{Project: pi, Container: ci})
 		}
 	}

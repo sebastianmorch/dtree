@@ -242,3 +242,92 @@ func TestEmptyTree(t *testing.T) {
 		t.Fatalf("cursor %d", tr.Cursor())
 	}
 }
+
+func TestFilter(t *testing.T) {
+	cs := []Container{
+		c("l1", "local", "redis"),
+		c("l2", "local", "hub"),
+		c("s1", "shop", "redis"),
+		c("s2", "shop", "api"),
+		c("x1", "", ""),
+	}
+	tests := []struct {
+		query string
+		want  []string
+	}{
+		{"", []string{"local", "  hub", "  redis", "shop", "  api", "  redis", Standalone, "  x1"}},
+		{"RED", []string{"local", "  redis", "shop", "  redis"}},
+		{"shop", []string{"shop", "  api", "  redis"}}, // project name shows the whole project
+		{"local-hub", []string{"local", "  hub"}},      // full container name
+		{"stand", []string{Standalone, "  x1"}},        // synthetic group name
+		{"nothing", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			tr := New()
+			tr.Set(cs)
+			tr.SetFilter(tt.query)
+			if got := names(tr); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("rows = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterMatchingCount(t *testing.T) {
+	tr := New()
+	tr.Set([]Container{c("l1", "local", "redis"), c("l2", "local", "hub")})
+	tr.SetFilter("redis")
+	if r, _ := tr.Selected(); tr.Matching(r) != 1 {
+		t.Fatalf("matching = %d, want 1", tr.Matching(r))
+	}
+}
+
+func TestFilterExpandsAndRestoresFoldState(t *testing.T) {
+	tr := New()
+	tr.Set([]Container{c("a1", "a", "x"), c("b1", "b", "y")})
+	tr.Collapse() // collapse a
+	tr.SetFilter("x")
+	if tr.IsCollapsed("a") || !reflect.DeepEqual(names(tr), []string{"a", "  x"}) {
+		t.Fatalf("filter should expand matches: %q", names(tr))
+	}
+	tr.Collapse() // folding inside the filter is separate
+	if !tr.IsCollapsed("a") {
+		t.Fatal("collapse during filter")
+	}
+	tr.SetFilter("")
+	if !tr.IsCollapsed("a") || !reflect.DeepEqual(names(tr), []string{"a", "b", "  y"}) {
+		t.Fatalf("original fold state not restored: %q", names(tr))
+	}
+	tr.Expand()
+	tr.SetFilter("x")
+	tr.Collapse()
+	tr.SetFilter("")
+	if tr.IsCollapsed("a") {
+		t.Fatal("fold inside filter leaked into normal state")
+	}
+}
+
+func TestFilterKeepsCursorAndFirstContainer(t *testing.T) {
+	tr := New()
+	tr.Set([]Container{c("a1", "a", "redis"), c("b1", "b", "redis"), c("b2", "b", "api")})
+	tr.Bottom() // b2 (api)
+	tr.SetFilter("redis")
+	if got := selected(tr); got != "b1" { // b2 hidden: neighbour in same project
+		t.Fatalf("selected %q, want b1", got)
+	}
+	tr.FirstContainer()
+	if got := selected(tr); got != "a1" {
+		t.Fatalf("FirstContainer selected %q", got)
+	}
+	tr.SetFilter("")
+	if got := selected(tr); got != "a1" {
+		t.Fatalf("clearing filter moved cursor to %q", got)
+	}
+	// Refreshes keep applying the filter.
+	tr.SetFilter("api")
+	tr.Set([]Container{c("a1", "a", "redis"), c("b2", "b", "api"), c("c1", "c", "api")})
+	if got := names(tr); !reflect.DeepEqual(got, []string{"b", "  api", "c", "  api"}) {
+		t.Fatalf("rows after refresh = %q", got)
+	}
+}
