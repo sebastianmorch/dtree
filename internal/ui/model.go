@@ -267,7 +267,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		m.tree.Top()
 	case "G", "end":
 		m.tree.Bottom()
-	case "enter", " ":
+	case "enter":
+		if c := m.tree.SelectedContainer(); c != nil {
+			return m.shell(*c)
+		}
+		m.tree.Toggle()
+	case " ":
 		if c := m.tree.SelectedContainer(); c != nil {
 			return m.openLogs(*c)
 		}

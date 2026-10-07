@@ -210,9 +210,9 @@ func TestLogsViewer(t *testing.T) {
 	if m.mode != modeTree || m.viewer != nil {
 		t.Fatal("q should return to tree")
 	}
-	press(t, m, "enter") // enter on container opens logs
+	press(t, m, " ") // space on container opens logs
 	if m.mode != modeViewer {
-		t.Fatal("enter on container should open logs")
+		t.Fatal("space on container should open logs")
 	}
 	press(t, m, "esc")
 	if m.mode != modeTree {
@@ -237,6 +237,11 @@ func TestStoppedContainerLogsDoNotFollow(t *testing.T) {
 	press(t, m, "q", "s")
 	if !strings.Contains(screen(m), "worker is not running") {
 		t.Fatalf("shell on stopped container:\n%s", screen(m))
+	}
+	m.status = ""
+	press(t, m, "enter") // enter on a container opens a shell
+	if m.mode != modeTree || !strings.Contains(screen(m), "worker is not running") {
+		t.Fatalf("enter on container should try a shell:\n%s", screen(m))
 	}
 	press(t, m, "a")
 	if len(m.tree.Rows()) != 5 { // shop, api, db, (standalone), buildkit
