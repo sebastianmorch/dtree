@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -140,13 +141,151 @@ func screen(m *Model) string { return ansi.Strip(m.View()) }
 func TestTreeRendersProjectsAndContainers(t *testing.T) {
 	m, _ := setup(t)
 	s := screen(m)
-	for _, want := range []string{"▾ shop", "2/2 running", "api", "shop:dev", "8080->8080", "▾ (standalone)", "buildkit", "connected"} {
+	for _, want := range []string{"▾ shop", "2/2 running", "api", "shop:dev", "2h", "▾ (standalone)", "buildkit", "connected"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("screen missing %q:\n%s", want, s)
 		}
 	}
 	if strings.Index(s, "shop") > strings.Index(s, "(standalone)") {
 		t.Error("standalone should be listed last")
+	}
+	if strings.Contains(s, "8080->8080") || strings.Contains(s, "status") {
+		t.Errorf("details should only show for a selected container:\n%s", s)
+	}
+}
+
+func TestInfoPanelForContainer(t *testing.T) {
+	m, f := setup(t)
+	f.running[0].Image = "594489062793.dkr.ecr.eu-central-1.amazonaws.com/shop:dev"
+	f.running[0].Status = "Up 2 hours (healthy)"
+	press(t, m, "r", "j")
+	s := screen(m)
+	for _, want := range []string{
+		"  ▶ ● api ",
+		"2h ✅",
+		"─ api ─",
+		" name     shop-api-1 · a1",
+		" image    594489062793.dkr.ecr.eu-central-1.amazonaws.com/shop:dev",
+		" status   Up 2 hours (healthy)",
+		" ports    8080->8080",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("screen missing %q:\n%s", want, s)
+		}
+	}
+	// The panel sits below the list, directly above the footer.
+	lines := strings.Split(s, "\n")
+	if !strings.HasPrefix(lines[len(lines)-2], " ports") {
+		t.Errorf("panel should end right above the footer:\n%s", s)
+	}
+	press(t, m, "j") // db has no ports
+	s = screen(m)
+	if !strings.Contains(s, "─ db ─") || !strings.Contains(s, "shop-db-1") || strings.Contains(s, " ports ") {
+		t.Errorf("panel did not follow the cursor to db:\n%s", s)
+	}
+}
+
+func TestInfoPanelForProject(t *testing.T) {
+	m, f := setup(t)
+	home, _ := os.UserHomeDir()
+	for i := range f.running[:2] {
+		f.running[i].WorkingDir = home + "/code/shop"
+		f.running[i].ConfigFiles = []string{home + "/code/shop/docker-compose.yml"}
+		f.running[i].Networks = []string{"shop_default"}
+	}
+	f.running[0].HostPorts = []int{8081, 8080, 8082, 443}
+	f.running[0].Status = "Up 2 hours (healthy)"
+	f.running[1].Volumes = []string{"shop_db"}
+	f.all = []tree.Container{{ID: "x1", Name: "shop-worker-1", Project: "shop", Service: "worker", State: "exited", Status: "Exited (1) 5 minutes ago"}}
+	press(t, m, "a") // include the exited container
+	s := screen(m)
+	for _, want := range []string{
+		"─ shop ─",
+		" dir      ~/code/shop",
+		" file     docker-compose.yml",
+		" state    2 running · 1 exited · 1 ✅",
+		" ports    443, 8080-8082",
+		" network  shop_default",
+		" volumes  shop_db",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("screen missing %q:\n%s", want, s)
+		}
+	}
+	press(t, m, "G", "h") // standalone project: no dir, file or volumes
+	s = screen(m)
+	if !strings.Contains(s, "─ (standalone) ─") || strings.Contains(s, " dir ") || !strings.Contains(s, " state    1 running") {
+		t.Errorf("standalone panel:\n%s", s)
+	}
+}
+
+func TestInfoPanelLimits(t *testing.T) {
+	m, f := setup(t)
+	f.running[0].Ports = strings.Repeat("8080->80, ", 40)
+	press(t, m, "r", "j")
+	lines := strings.Split(screen(m), "\n")
+	if len(lines) != 20 {
+		t.Fatalf("screen has %d lines, want 20", len(lines))
+	}
+	panel := 0
+	for i, l := range lines {
+		if strings.HasPrefix(l, "─ api") {
+			panel = len(lines) - 1 - i
+		}
+	}
+	if panel == 0 || panel > 9 { // body is 18 rows, panel gets at most half
+		t.Fatalf("panel takes %d rows:\n%s", panel, strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(screen(m), "  ▶ ● api") {
+		t.Fatal("selected row must stay visible above the panel")
+	}
+
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 10})
+	if strings.Contains(screen(m), "─ api") {
+		t.Fatal("panel should be hidden on very short terminals")
+	}
+}
+
+func TestNarrowLayoutKeepsImageAndWrapsInfo(t *testing.T) {
+	m, f := setup(t)
+	f.running[0].Image = "594489062793.dkr.ecr.eu-central-1.amazonaws.com/test-authorization-service:branch_master"
+	f.running[0].Name = "tracking-code-creator-worker-local"
+	f.running[0].Ports = "80->80, 443->443, 6006->6006, 8081-8083->8081-8083"
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	press(t, m, "r", "j")
+	lines := strings.Split(screen(m), "\n")
+	for _, l := range lines {
+		if w := ansi.StringWidth(l); w > 60 {
+			t.Errorf("line wider than terminal (%d): %q", w, l)
+		}
+	}
+	s := strings.Join(lines, "\n")
+	for _, want := range []string{"8081-8083->8081-8083", "amazonaws.com/", "test-authorization-service:branch_master"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("screen missing %q:\n%s", want, s)
+		}
+	}
+}
+
+func TestScrollKeepsCursorVisible(t *testing.T) {
+	m, f := setup(t)
+	for i := 0; i < 30; i++ {
+		f.running = append(f.running, tree.Container{
+			ID: fmt.Sprintf("x%02d", i), Name: fmt.Sprintf("svc-%02d", i), Image: "img", State: "running", Status: "Up 1 hour",
+		})
+	}
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 16})
+	press(t, m, "r", "G")
+	s := screen(m)
+	if len(strings.Split(s, "\n")) != 16 {
+		t.Fatalf("screen height wrong:\n%s", s)
+	}
+	if !strings.Contains(s, "▶ ● svc-29") || !strings.Contains(s, "─ svc-29") {
+		t.Fatalf("selected row and panel not visible:\n%s", s)
+	}
+	press(t, m, "g")
+	if !strings.Contains(screen(m), "▾ shop") {
+		t.Fatalf("g should scroll back to top:\n%s", screen(m))
 	}
 }
 

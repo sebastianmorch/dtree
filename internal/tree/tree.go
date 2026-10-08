@@ -22,6 +22,12 @@ type Container struct {
 	State   string // running, exited, paused, restarting, created, dead, removing
 	Status  string // human readable status from Docker, e.g. "Up 2 hours (healthy)"
 	Ports   string
+
+	WorkingDir  string   // compose project directory
+	ConfigFiles []string // compose files, absolute paths
+	Networks    []string
+	Volumes     []string // named volumes
+	HostPorts   []int    // published host ports
 }
 
 // DisplayName is the service name inside a compose project (the project is
@@ -35,6 +41,20 @@ func (c Container) DisplayName() string {
 
 func (c Container) Running() bool { return c.State == "running" }
 
+// HealthCheck is the healthcheck result reported in the status text:
+// "healthy", "unhealthy", "starting", or "" when there is no healthcheck.
+func (c Container) HealthCheck() string {
+	switch {
+	case strings.Contains(c.Status, "(healthy)"):
+		return "healthy"
+	case strings.Contains(c.Status, "(unhealthy)"):
+		return "unhealthy"
+	case strings.Contains(c.Status, "(health: starting)"):
+		return "starting"
+	}
+	return ""
+}
+
 // Health is a coarse classification used for colouring.
 type Health int
 
@@ -47,7 +67,7 @@ const (
 func (c Container) Health() Health {
 	switch c.State {
 	case "running":
-		if strings.Contains(c.Status, "(unhealthy)") {
+		if c.HealthCheck() == "unhealthy" {
 			return Degraded
 		}
 		return Healthy

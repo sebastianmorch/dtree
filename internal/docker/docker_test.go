@@ -35,6 +35,28 @@ func TestFormatPorts(t *testing.T) {
 			},
 			"[::1]:2222->22, 53/udp, 127.0.0.1:6379->6379",
 		},
+		{
+			"consecutive ports merge into ranges",
+			[]container.Port{
+				{IP: "0.0.0.0", PrivatePort: 8083, PublicPort: 8083, Type: "tcp"},
+				{IP: "0.0.0.0", PrivatePort: 8081, PublicPort: 8081, Type: "tcp"},
+				{IP: "::", PrivatePort: 8082, PublicPort: 8082, Type: "tcp"},
+				{IP: "0.0.0.0", PrivatePort: 8082, PublicPort: 8082, Type: "tcp"},
+				{IP: "0.0.0.0", PrivatePort: 80, PublicPort: 80, Type: "tcp"},
+				{PrivatePort: 9000, Type: "tcp"},
+				{PrivatePort: 9001, Type: "tcp"},
+				{PrivatePort: 9002, Type: "udp"},
+			},
+			"80->80, 8081-8083->8081-8083, 9000-9001, 9002/udp",
+		},
+		{
+			"non-consecutive host ports do not merge",
+			[]container.Port{
+				{PrivatePort: 80, PublicPort: 8080, Type: "tcp"},
+				{PrivatePort: 81, PublicPort: 9090, Type: "tcp"},
+			},
+			"8080->80, 9090->81",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

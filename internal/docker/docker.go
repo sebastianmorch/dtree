@@ -17,6 +17,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 
@@ -24,8 +25,10 @@ import (
 )
 
 const (
-	labelProject = "com.docker.compose.project"
-	labelService = "com.docker.compose.service"
+	labelProject     = "com.docker.compose.project"
+	labelService     = "com.docker.compose.service"
+	labelWorkingDir  = "com.docker.compose.project.working_dir"
+	labelConfigFiles = "com.docker.compose.project.config_files"
 )
 
 // LogLine is one line of container output.
@@ -116,9 +119,58 @@ func (s *SDK) List(ctx context.Context, all bool) ([]tree.Container, error) {
 			State:   string(c.State),
 			Status:  c.Status,
 			Ports:   FormatPorts(c.Ports),
+
+			WorkingDir:  c.Labels[labelWorkingDir],
+			ConfigFiles: splitList(c.Labels[labelConfigFiles]),
+			Networks:    networks(c),
+			Volumes:     volumes(c),
+			HostPorts:   hostPorts(c.Ports),
 		})
 	}
 	return out, nil
+}
+
+func splitList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
+}
+
+func networks(c container.Summary) []string {
+	if c.NetworkSettings == nil {
+		return nil
+	}
+	var out []string
+	for name := range c.NetworkSettings.Networks {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func volumes(c container.Summary) []string {
+	var out []string
+	for _, m := range c.Mounts {
+		if m.Type == mount.TypeVolume && m.Name != "" {
+			out = append(out, m.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func hostPorts(ports []container.Port) []int {
+	seen := map[int]bool{}
+	var out []int
+	for _, p := range ports {
+		if p.PublicPort != 0 && !seen[int(p.PublicPort)] {
+			seen[int(p.PublicPort)] = true
+			out = append(out, int(p.PublicPort))
+		}
+	}
+	sort.Ints(out)
+	return out
 }
 
 // shortImage shortens untagged image references ("sha256:<64 hex>").
@@ -130,37 +182,83 @@ func shortImage(image string) string {
 }
 
 // FormatPorts renders ports compactly: "8080->80, 5432, 53/udp". The host IP
-// is omitted when bound to all interfaces, and IPv4/IPv6 duplicates collapse.
+// is omitted when bound to all interfaces, IPv4/IPv6 duplicates collapse, and
+// consecutive ports merge into ranges ("8081-8083->8081-8083").
 func FormatPorts(ports []container.Port) string {
-	ps := append([]container.Port(nil), ports...)
-	sort.SliceStable(ps, func(i, j int) bool {
-		if ps[i].PrivatePort != ps[j].PrivatePort {
-			return ps[i].PrivatePort < ps[j].PrivatePort
+	type mapping struct {
+		host        string // "" for all interfaces, else "IP:" or "[IPv6]:"
+		proto       string
+		priv, pub   int // pub is 0 when not published
+		privN, pubN int // last port of a merged range
+	}
+	seen := map[mapping]bool{}
+	var ms []mapping
+	for _, p := range ports {
+		m := mapping{proto: p.Type, priv: int(p.PrivatePort), pub: int(p.PublicPort)}
+		if m.proto == "" {
+			m.proto = "tcp"
 		}
-		return ps[i].PublicPort < ps[j].PublicPort
-	})
-	seen := map[string]bool{}
-	var parts []string
-	for _, p := range ps {
-		s := strconv.Itoa(int(p.PrivatePort))
-		if p.Type != "" && p.Type != "tcp" {
-			s += "/" + p.Type
-		}
-		if p.PublicPort != 0 {
-			host := strconv.Itoa(int(p.PublicPort))
+		if m.pub != 0 {
 			switch {
 			case p.IP == "" || p.IP == "0.0.0.0" || p.IP == "::":
 			case strings.Contains(p.IP, ":"):
-				host = "[" + p.IP + "]:" + host
+				m.host = "[" + p.IP + "]:"
 			default:
-				host = p.IP + ":" + host
+				m.host = p.IP + ":"
 			}
-			s = host + "->" + s
 		}
-		if !seen[s] {
-			seen[s] = true
-			parts = append(parts, s)
+		if !seen[m] {
+			seen[m] = true
+			ms = append(ms, m)
 		}
+	}
+	sort.Slice(ms, func(i, j int) bool {
+		a, b := ms[i], ms[j]
+		if a.priv != b.priv {
+			return a.priv < b.priv
+		}
+		if a.pub != b.pub {
+			return a.pub < b.pub
+		}
+		if a.host != b.host {
+			return a.host < b.host
+		}
+		return a.proto < b.proto
+	})
+
+	var merged []mapping
+	for _, m := range ms {
+		m.privN, m.pubN = m.priv, m.pub
+		for i := len(merged) - 1; i >= 0; i-- {
+			last := &merged[i]
+			if last.host == m.host && last.proto == m.proto && last.privN+1 == m.priv &&
+				((last.pub == 0 && m.pub == 0) || (last.pub != 0 && last.pubN+1 == m.pub)) {
+				last.privN, last.pubN = m.priv, m.pub
+				m.priv = -1
+				break
+			}
+		}
+		if m.priv >= 0 {
+			merged = append(merged, m)
+		}
+	}
+
+	portRange := func(from, to int) string {
+		if from == to {
+			return strconv.Itoa(from)
+		}
+		return strconv.Itoa(from) + "-" + strconv.Itoa(to)
+	}
+	parts := make([]string, 0, len(merged))
+	for _, m := range merged {
+		s := portRange(m.priv, m.privN)
+		if m.proto != "tcp" {
+			s += "/" + m.proto
+		}
+		if m.pub != 0 {
+			s = m.host + portRange(m.pub, m.pubN) + "->" + s
+		}
+		parts = append(parts, s)
 	}
 	return strings.Join(parts, ", ")
 }
