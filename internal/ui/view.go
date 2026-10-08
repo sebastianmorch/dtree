@@ -63,7 +63,7 @@ func (m *Model) treeFooter() string {
 		}
 		return ansi.Truncate(st.Render(m.status), m.width, "…")
 	}
-	hints := "j/k move · h/l fold · / filter · L logs · i inspect · s shell · a all · r refresh · ? help · q quit"
+	hints := "j/k move · h/l fold · / or f filter · L logs · i inspect · s shell · a all · r refresh · ? help · q quit"
 	if m.tree.Filter() != "" {
 		hints = "esc clear filter · " + hints
 	}
@@ -240,7 +240,7 @@ var helpSections = []struct {
 		{"enter", "toggle project · shell on container"},
 		{"space", "toggle project · logs on container"},
 		{"g / G", "top / bottom"},
-		{"/", "filter by container or project name"},
+		{"/ or f", "filter by container or project name"},
 		{"esc", "clear filter"},
 		{"L", "logs"},
 		{"i", "inspect"},

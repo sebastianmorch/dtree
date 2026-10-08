@@ -392,6 +392,12 @@ func TestFilterByName(t *testing.T) {
 		t.Fatal("esc should clear the filter")
 	}
 
+	press(t, m, "f", "f") // f also starts filtering; then it is text
+	if !m.filtering || m.tree.Filter() != "f" {
+		t.Fatalf("f: filtering %v filter %q", m.filtering, m.tree.Filter())
+	}
+	press(t, m, "esc")
+
 	press(t, m, "/", "j", "k") // vim keys are text while typing
 	if m.tree.Filter() != "jk" {
 		t.Fatalf("filter = %q, want jk", m.tree.Filter())

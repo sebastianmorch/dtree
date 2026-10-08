@@ -251,7 +251,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	switch key {
 	case "q", "ctrl+c":
 		return m.quit()
-	case "/":
+	case "/", "f":
 		m.filtering = true
 	case "esc":
 		m.tree.SetFilter("")
