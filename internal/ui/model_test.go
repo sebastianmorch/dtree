@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -424,5 +425,17 @@ func TestMultiRuneInput(t *testing.T) {
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("oops 3"), Paste: true})
 	if m.viewer.input != "oops 3" {
 		t.Fatalf("search input = %q", m.viewer.input)
+	}
+}
+
+func TestClearScreenExecClearsBeforeRunning(t *testing.T) {
+	var out strings.Builder
+	c := &clearScreenExec{exec.Command("echo", "hi")}
+	c.SetStdout(&out)
+	if err := c.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != clearScreen+"hi\n" {
+		t.Fatalf("output %q", out.String())
 	}
 }

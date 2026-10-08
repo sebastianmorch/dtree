@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -520,9 +521,43 @@ func (m *Model) shell(c tree.Container) tea.Cmd {
 	stderr := &bytes.Buffer{}
 	cmd.Stderr = &teeWriter{w: os.Stderr, buf: stderr}
 	name := c.DisplayName()
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+	return tea.Exec(&clearScreenExec{cmd}, func(err error) tea.Msg {
 		return execDoneMsg{name: name, err: err, stderr: stderr.String()}
 	})
+}
+
+// clearScreenExec clears the terminal before running the command. Bubble Tea
+// leaves the alternate screen for exec, which would otherwise show whatever
+// was in the terminal before dtree started above the container's prompt.
+type clearScreenExec struct{ *exec.Cmd }
+
+const clearScreen = "\x1b[H\x1b[2J"
+
+func (c *clearScreenExec) SetStdin(r io.Reader) {
+	if c.Stdin == nil {
+		c.Stdin = r
+	}
+}
+
+func (c *clearScreenExec) SetStdout(w io.Writer) {
+	if c.Stdout == nil {
+		c.Stdout = w
+	}
+}
+
+func (c *clearScreenExec) SetStderr(w io.Writer) {
+	if c.Stderr == nil {
+		c.Stderr = w
+	}
+}
+
+func (c *clearScreenExec) Run() error {
+	out := c.Stdout
+	if out == nil {
+		out = os.Stdout
+	}
+	_, _ = io.WriteString(out, clearScreen)
+	return c.Cmd.Run()
 }
 
 func (m *Model) execResult(msg execDoneMsg) tea.Cmd {
