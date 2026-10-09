@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
-	"dtree/internal/docker"
+	"github.com/sebastianmorch/dtree/internal/docker"
 )
 
 // maxLogLines caps the log buffer; the oldest lines are dropped beyond it.

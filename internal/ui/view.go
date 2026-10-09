@@ -9,7 +9,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"dtree/internal/tree"
+	"github.com/sebastianmorch/dtree/internal/tree"
 )
 
 const (

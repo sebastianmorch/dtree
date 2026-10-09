@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"dtree/internal/tree"
+	"github.com/sebastianmorch/dtree/internal/tree"
 )
 
 // shortImage drops the registry host (and Docker Hub's "library/") so the

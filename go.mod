@@ -1,4 +1,4 @@
-module dtree
+module github.com/sebastianmorch/dtree
 
 go 1.27.1
 

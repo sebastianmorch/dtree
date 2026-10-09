@@ -11,8 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
-	"dtree/internal/docker"
-	"dtree/internal/tree"
+	"github.com/sebastianmorch/dtree/internal/docker"
+	"github.com/sebastianmorch/dtree/internal/tree"
 )
 
 type fakeClient struct {

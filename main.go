@@ -10,8 +10,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"dtree/internal/docker"
-	"dtree/internal/ui"
+	"github.com/sebastianmorch/dtree/internal/docker"
+	"github.com/sebastianmorch/dtree/internal/ui"
 )
 
 var version = "dev"

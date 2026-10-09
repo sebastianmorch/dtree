@@ -21,7 +21,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 
-	"dtree/internal/tree"
+	"github.com/sebastianmorch/dtree/internal/tree"
 )
 
 const (
