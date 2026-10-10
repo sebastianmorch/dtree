@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -14,7 +15,21 @@ import (
 	"github.com/sebastianmorch/dtree/internal/ui"
 )
 
+// version can be set at build time with -ldflags "-X main.version=...".
 var version = "dev"
+
+// buildVersion returns version, or when it was not set, the module version
+// Go recorded in the binary: the tag for "go install ...@v0.3.0", or a
+// pseudo-version for a build from a checkout.
+func buildVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return version
+}
 
 func main() {
 	var all, showVersion bool
@@ -24,7 +39,7 @@ func main() {
 	flag.Parse()
 
 	if showVersion {
-		fmt.Println("dtree", version)
+		fmt.Println("dtree", buildVersion())
 		return
 	}
 
