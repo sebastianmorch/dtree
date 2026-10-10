@@ -25,7 +25,7 @@ type fakeClient struct {
 	events       chan struct{}
 	eventErrs    chan error
 
-	execOut   []docker.LogLine
+	execOut   string // raw terminal output of each command
 	execExit  int
 	execHold  chan struct{} // when set, commands run until it is closed or stopped
 	ignoreInt bool          // commands ignore Ctrl+C
@@ -76,10 +76,10 @@ func (f *fakeClient) Inspect(context.Context, string) ([]byte, error) {
 
 func (f *fakeClient) Exec(_ context.Context, id string, opts docker.ExecOptions) (*docker.ExecSession, error) {
 	f.execs = append(f.execs, id+": "+opts.Command)
-	lines := make(chan docker.LogLine, len(f.execOut))
+	lines := make(chan []byte, 1)
 	result := make(chan docker.ExecResult, 1)
-	for _, l := range f.execOut {
-		lines <- l
+	if f.execOut != "" {
+		lines <- []byte(f.execOut)
 	}
 	hold, exit, ignoreInt := f.execHold, f.execExit, f.ignoreInt
 	stop := make(chan int, 2)
@@ -105,7 +105,7 @@ func (f *fakeClient) Exec(_ context.Context, id string, opts docker.ExecOptions)
 		}
 		return nil
 	}
-	return &docker.ExecSession{Lines: lines, Result: result, Interrupt: interrupt}, nil
+	return &docker.ExecSession{Output: lines, Result: result, Interrupt: interrupt}, nil
 }
 
 // run executes cmd and feeds resulting messages back into the model until
@@ -688,7 +688,7 @@ func typeText(m *Model, text string) {
 
 func TestQuickCommand(t *testing.T) {
 	m, f := setup(t)
-	f.execOut = []docker.LogLine{{Text: "total 0"}, {Text: "ls: oops", Stderr: true}}
+	f.execOut = "total 0\r\nls: oops\r\n"
 	f.execExit = 2
 	press(t, m, "j", "x")
 	if !m.prompting || !strings.Contains(screen(m), "╭─ run › shop/api ─") || !strings.Contains(screen(m), "│ $ █") {

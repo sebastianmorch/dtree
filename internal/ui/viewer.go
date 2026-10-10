@@ -94,6 +94,27 @@ func (v *viewer) appendLogs(lines []docker.LogLine) {
 	}
 }
 
+// replaceTail applies a term's changes: it drops the lines the term dropped
+// from the top, then replaces the lines from index from on.
+func (v *viewer) replaceTail(dropped, from int, lines []viewLine) {
+	v.loading = false
+	if dropped > 0 {
+		dropped = min(dropped, len(v.lines))
+		v.lines = v.lines[dropped:]
+		v.offset = max(0, v.offset-dropped)
+		v.match = max(-1, v.match-dropped)
+		from = max(0, from)
+	}
+	v.lines = append(v.lines[:min(from, len(v.lines))], lines...)
+	if v.match >= len(v.lines) {
+		v.match = -1
+	}
+	if v.follow {
+		v.offset = v.maxOffset()
+	}
+	v.clampOffset()
+}
+
 func (v *viewer) appendMarker(text string) {
 	v.loading = false
 	v.lines = append(v.lines, viewLine{text: text, plain: text, marker: true})

@@ -29,12 +29,25 @@ type job struct {
 	exit    int
 	err     error
 	viewer  *viewer
+	term    *term // interprets the output; the viewer shows its rows
 	cancel  context.CancelFunc
 
 	// interrupt stops the command; nil until it has started. stops counts
 	// ctrl+c presses: the first interrupts it, later ones kill it.
 	interrupt func(force bool) error
 	stops     int
+}
+
+// write feeds command output to the terminal and shows the result.
+func (j *job) write(data []byte) {
+	_, _ = j.term.Write(data)
+	j.viewer.replaceTail(j.term.flush())
+}
+
+// marker adds a status line below the output.
+func (j *job) marker(text string) {
+	j.term.marker(text)
+	j.viewer.replaceTail(j.term.flush())
 }
 
 func (j *job) failed() bool { return j.err != nil || j.exit != 0 }
@@ -101,9 +114,9 @@ type (
 	execBatchMsg struct {
 		id     string
 		gen    int
-		ch     <-chan docker.LogLine
+		ch     <-chan []byte
 		resCh  <-chan docker.ExecResult
-		lines  []docker.LogLine
+		data   []byte
 		done   bool
 		result docker.ExecResult
 	}
@@ -193,7 +206,7 @@ func (m *Model) runJob(c tree.Container, cmd string) tea.Cmd {
 	width, height := m.popupWidth()-4, m.popupHeight()-2
 	v := newViewer(viewExec, title, width, height)
 	v.cmd, v.follow = cmd, true
-	j := &job{gen: gen, name: c.DisplayName(), cmd: cmd, running: true, viewer: v, cancel: cancel}
+	j := &job{gen: gen, name: c.DisplayName(), cmd: cmd, running: true, viewer: v, term: newTerm(width, height), cancel: cancel}
 	j.sync()
 	m.jobs[c.ID] = j
 	m.openPopup(c.ID)
@@ -224,7 +237,7 @@ func (m *Model) execStarted(msg execStartMsg) tea.Cmd {
 	}
 	j.viewer.loading = false
 	j.interrupt = msg.session.Interrupt
-	read := readExec(msg.id, msg.gen, msg.session.Lines, msg.session.Result)
+	read := readExec(msg.id, msg.gen, msg.session.Output, msg.session.Result)
 	if j.stops > 0 { // ctrl+c was pressed while it was starting
 		return tea.Batch(read, m.sendStop(msg.id, j, j.stops > 1))
 	}
@@ -244,7 +257,7 @@ func (m *Model) stopJob(id string, j *job) tea.Cmd {
 
 func (m *Model) sendStop(id string, j *job, force bool) tea.Cmd {
 	if force {
-		j.viewer.appendMarker("── killing ──")
+		j.marker("── killing ──")
 	}
 	interrupt, gen := j.interrupt, j.gen
 	return func() tea.Msg {
@@ -257,7 +270,7 @@ func (m *Model) sendStop(id string, j *job, force bool) tea.Cmd {
 
 func (m *Model) stopFailed(msg stopFailedMsg) tea.Cmd {
 	if j := m.job(msg.id, msg.gen); j != nil && j.running {
-		j.viewer.appendMarker("── could not stop: " + msg.err.Error() + " ──")
+		j.marker("── could not stop: " + msg.err.Error() + " ──")
 	}
 	return nil
 }
@@ -267,8 +280,8 @@ func (m *Model) execBatch(msg execBatchMsg) tea.Cmd {
 	if j == nil {
 		return nil
 	}
-	if len(msg.lines) > 0 {
-		j.viewer.appendLogs(msg.lines)
+	if len(msg.data) > 0 {
+		j.write(msg.data)
 	}
 	if !msg.done {
 		return readExec(msg.id, msg.gen, msg.ch, msg.resCh)
@@ -284,11 +297,11 @@ func (m *Model) finishJob(id string, j *job, r docker.ExecResult) tea.Cmd {
 	j.sync()
 	switch {
 	case r.Err != nil:
-		j.viewer.appendMarker("── error: " + r.Err.Error() + " ──")
+		j.marker("── error: " + r.Err.Error() + " ──")
 	case j.stopped():
-		j.viewer.appendMarker(fmt.Sprintf("── stopped (exit code %d) ──", r.ExitCode))
+		j.marker(fmt.Sprintf("── stopped (exit code %d) ──", r.ExitCode))
 	default:
-		j.viewer.appendMarker(fmt.Sprintf("── exited with code %d ──", r.ExitCode))
+		j.marker(fmt.Sprintf("── exited with code %d ──", r.ExitCode))
 	}
 	if m.popup == id {
 		return nil
@@ -305,10 +318,10 @@ func (m *Model) finishJob(id string, j *job, r docker.ExecResult) tea.Cmd {
 
 // readExec reads the next batch of output; once the output ends it waits for
 // the exit code.
-func readExec(id string, gen int, lines <-chan docker.LogLine, result <-chan docker.ExecResult) tea.Cmd {
+func readExec(id string, gen int, output <-chan []byte, result <-chan docker.ExecResult) tea.Cmd {
 	return func() tea.Msg {
-		batch, done := readBatch(lines)
-		msg := execBatchMsg{id: id, gen: gen, ch: lines, resCh: result, lines: batch, done: done}
+		data, done := readChunks(output)
+		msg := execBatchMsg{id: id, gen: gen, ch: output, resCh: result, data: data, done: done}
 		if done {
 			msg.result = <-result
 		}
@@ -446,4 +459,25 @@ func (m *Model) promptBox() []string {
 
 func (m *Model) promptFooter() string {
 	return hintBar([][2]string{{"enter", "run"}, {"esc", "cancel"}, {"↑/↓", "history"}, {"^u", "clear"}}, m.width)
+}
+
+// readChunks blocks for output, then takes whatever else is buffered so busy
+// output renders in batches. done reports that the channel is closed.
+func readChunks(ch <-chan []byte) (data []byte, done bool) {
+	data, ok := <-ch
+	if !ok {
+		return nil, true
+	}
+	for len(data) < 1<<20 {
+		select {
+		case more, ok := <-ch:
+			if !ok {
+				return data, true
+			}
+			data = append(data, more...)
+		default:
+			return data, false
+		}
+	}
+	return data, false
 }

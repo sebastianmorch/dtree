@@ -13,7 +13,7 @@ open a shell, all with vim keys or the arrow keys.
 - Logs and inspect open in a built-in viewer with search, follow and line wrap.
   Inspect output is shown as YAML.
 - Quick commands: press `x` on a container, type a shell command and its
-  output streams into a popup. Close the popup and the command keeps running;
+  output streams into a popup, with progress bars updating in place. Close the popup and the command keeps running;
   the container's row shows whether it is still running (⟳), succeeded (✓),
   failed (✗) or was stopped (■), and `X` brings the output back. `ctrl+c` in
   the popup stops a running command; press it again to kill a command that

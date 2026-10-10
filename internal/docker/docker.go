@@ -60,9 +60,10 @@ type ExecOptions struct {
 
 // ExecSession is a running Exec command.
 type ExecSession struct {
-	// Lines streams the output and closes when the command ends; then
-	// Result receives exactly one value.
-	Lines  <-chan LogLine
+	// Output streams the raw terminal output, escape sequences included,
+	// and closes when the command ends; then Result receives exactly one
+	// value.
+	Output <-chan []byte
 	Result <-chan ExecResult
 	// Interrupt types Ctrl+C into the command's terminal, which signals the
 	// command and everything it started. With force it kills them instead,
@@ -388,7 +389,7 @@ func (s *SDK) Exec(ctx context.Context, id string, opts ExecOptions) (*ExecSessi
 	if err != nil {
 		return nil, err
 	}
-	lines := make(chan LogLine, 512)
+	output := make(chan []byte, 64)
 	result := make(chan ExecResult, 1)
 	var pgid atomic.Int64
 	go func() {
@@ -401,12 +402,10 @@ func (s *SDK) Exec(ctx context.Context, id string, opts ExecOptions) (*ExecSessi
 			pgid.Store(int64(pid))
 		}
 		// A terminal has a single stream; stdout and stderr are mixed.
-		out := &lineWriter{ctx: ctx, ch: lines}
 		if err == nil {
-			_, err = io.Copy(out, r)
+			_, err = io.Copy(&chunkWriter{ctx: ctx, ch: output}, r)
 		}
-		out.Flush()
-		close(lines)
+		close(output)
 		if err != nil {
 			result <- ExecResult{ExitCode: -1, Err: err}
 			return
@@ -424,7 +423,7 @@ func (s *SDK) Exec(ctx context.Context, id string, opts ExecOptions) (*ExecSessi
 		}
 		return s.kill(id, pid)
 	}
-	return &ExecSession{Lines: lines, Result: result, Interrupt: interrupt}, nil
+	return &ExecSession{Output: output, Result: result, Interrupt: interrupt}, nil
 }
 
 // kill sends SIGKILL to a process group in the container through a second
@@ -461,6 +460,21 @@ func (s *SDK) execExit(ctx context.Context, execID string) ExecResult {
 		}
 	}
 	return ExecResult{ExitCode: -1, Err: fmt.Errorf("exit code not available")}
+}
+
+// chunkWriter sends copies of what is written on ch.
+type chunkWriter struct {
+	ctx context.Context
+	ch  chan<- []byte
+}
+
+func (w *chunkWriter) Write(p []byte) (int, error) {
+	select {
+	case w.ch <- append([]byte(nil), p...):
+		return len(p), nil
+	case <-w.ctx.Done():
+		return 0, w.ctx.Err()
+	}
 }
 
 // lineWriter splits a byte stream into lines and sends them on ch. stdcopy
