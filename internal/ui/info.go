@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -13,6 +14,41 @@ import (
 type field struct {
 	label, value string
 	color        func(string) string
+}
+
+// containerDetails are the parts of docker inspect shown in the info panel.
+type containerDetails struct {
+	Entrypoint []string
+	Cmd        []string
+	WorkingDir string
+}
+
+func parseDetails(raw []byte) containerDetails {
+	var v struct{ Config containerDetails }
+	_ = json.Unmarshal(raw, &v) // missing fields are left out of the panel
+	return v.Config
+}
+
+// shellJoin renders an argument list the way it would be typed in a shell,
+// quoting arguments that need it: sh -c 'npm run start'.
+func shellJoin(args []string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = shellQuote(a)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	if strings.IndexFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r))
+	}) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // containerState is shown on the right of the info panel's top border.

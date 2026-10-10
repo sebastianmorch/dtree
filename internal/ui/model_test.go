@@ -20,6 +20,7 @@ type fakeClient struct {
 	logs         []docker.LogLine
 	logOpts      docker.LogOptions
 	inspect      string
+	inspects     int
 	events       chan struct{}
 	eventErrs    chan error
 }
@@ -59,6 +60,7 @@ func (f *fakeClient) Logs(_ context.Context, _ string, opts docker.LogOptions) (
 }
 
 func (f *fakeClient) Inspect(context.Context, string) ([]byte, error) {
+	f.inspects++
 	return []byte(f.inspect), nil
 }
 
@@ -164,10 +166,10 @@ func TestInfoPanelForContainer(t *testing.T) {
 		"┃   ● api ",
 		"2h ✅",
 		"─ api ─",
-		"│ name     shop-api-1 · a1",
-		" image    594489062793.dkr.ecr.eu-central-1.amazonaws.com/shop:dev",
-		" status   Up 2 hours (healthy)",
-		" ports    8080->8080",
+		"│ name        shop-api-1 · a1",
+		" image       594489062793.dkr.ecr.eu-central-1.amazonaws.com/shop:dev",
+		" status      Up 2 hours (healthy)",
+		" ports       8080->8080",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("screen missing %q:\n%s", want, s)
@@ -182,6 +184,35 @@ func TestInfoPanelForContainer(t *testing.T) {
 	s = screen(m)
 	if !strings.Contains(s, "─ db ─") || !strings.Contains(s, "shop-db-1") || strings.Contains(s, " ports ") {
 		t.Errorf("panel did not follow the cursor to db:\n%s", s)
+	}
+}
+
+func TestInfoPanelShowsInspectDetails(t *testing.T) {
+	m, f := setup(t)
+	f.inspect = `{"Config":{"Entrypoint":["docker-entrypoint.sh"],"Cmd":["sh","-c","npm run start"],"WorkingDir":"/app"}}`
+	m.details = map[string]*containerDetails{}
+	press(t, m, "j")
+	s := screen(m)
+	for _, want := range []string{
+		"│ entrypoint  docker-entrypoint.sh",
+		"│ cmd         sh -c 'npm run start'",
+		"│ workdir     /app",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("screen missing %q:\n%s", want, s)
+		}
+	}
+	n := f.inspects
+	press(t, m, "j", "k") // back to api: cached, only db is fetched
+	if f.inspects != n+1 {
+		t.Errorf("inspected %d times, want %d", f.inspects, n+1)
+	}
+}
+
+func TestShellJoin(t *testing.T) {
+	got := shellJoin([]string{"sh", "-c", "echo 'hi' && run", "", "--port=80"})
+	if want := `sh -c 'echo '\''hi'\'' && run' '' --port=80`; got != want {
+		t.Errorf("got %s, want %s", got, want)
 	}
 }
 
@@ -201,12 +232,12 @@ func TestInfoPanelForProject(t *testing.T) {
 	s := screen(m)
 	for _, want := range []string{
 		"─ shop ─",
-		" dir      ~/code/shop",
-		" file     docker-compose.yml",
-		" state    2 running · 1 exited · 1 ✅",
-		" ports    443, 8080-8082",
-		" network  shop_default",
-		" volumes  shop_db",
+		" dir         ~/code/shop",
+		" file        docker-compose.yml",
+		" state       2 running · 1 exited · 1 ✅",
+		" ports       443, 8080-8082",
+		" network     shop_default",
+		" volumes     shop_db",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("screen missing %q:\n%s", want, s)
@@ -214,7 +245,7 @@ func TestInfoPanelForProject(t *testing.T) {
 	}
 	press(t, m, "G", "h") // standalone project: no dir, file or volumes
 	s = screen(m)
-	if !strings.Contains(s, "─ (standalone) ─") || strings.Contains(s, " dir ") || !strings.Contains(s, " state    1 running") {
+	if !strings.Contains(s, "─ (standalone) ─") || strings.Contains(s, " dir ") || !strings.Contains(s, " state       1 running") {
 		t.Errorf("standalone panel:\n%s", s)
 	}
 }

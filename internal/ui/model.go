@@ -65,6 +65,10 @@ type (
 		lines []string
 		err   error
 	}
+	detailsMsg struct {
+		id      string
+		details containerDetails
+	}
 	execDoneMsg struct {
 		name   string
 		err    error
@@ -102,10 +106,18 @@ type Model struct {
 	logGen    int
 	logCancel context.CancelFunc
 	target    tree.Container // container shown in the viewer
+
+	// details caches inspect data for the info panel by container ID. A
+	// container's config never changes, so entries never go stale; nil
+	// marks a request in flight.
+	details map[string]*containerDetails
 }
 
 func New(client docker.Client, showAll bool) *Model {
-	return &Model{client: client, tree: tree.New(), showAll: showAll, width: 80, height: 24}
+	return &Model{
+		client: client, tree: tree.New(), showAll: showAll, width: 80, height: 24,
+		details: map[string]*containerDetails{},
+	}
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -121,6 +133,11 @@ func (m *Model) Close() {
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	_, cmd := m.update(msg)
+	return m, tea.Batch(cmd, m.loadDetails())
+}
+
+func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		if msg.Width <= 0 || msg.Height <= 0 {
@@ -146,6 +163,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loaded, m.listErr, m.connected = true, nil, true
 		m.tree.Set(msg.containers)
+		m.pruneDetails(msg.containers)
+		return m, nil
+
+	case detailsMsg:
+		m.details[msg.id] = &msg.details
 		return m, nil
 
 	case eventMsg:
@@ -510,6 +532,42 @@ func (m *Model) fetchInspect(id string) tea.Cmd {
 			return inspectMsg{id: id, err: err}
 		}
 		return inspectMsg{id: id, lines: highlightYAML(text)}
+	}
+}
+
+// loadDetails fetches the selected container's inspect data for the info
+// panel unless it is cached or already being fetched.
+func (m *Model) loadDetails() tea.Cmd {
+	c := m.tree.SelectedContainer()
+	if c == nil || m.mode != modeTree {
+		return nil
+	}
+	if _, ok := m.details[c.ID]; ok {
+		return nil
+	}
+	m.details[c.ID] = nil
+	client, id := m.client, c.ID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		raw, err := client.Inspect(ctx, id)
+		if err != nil {
+			return detailsMsg{id: id} // shown without the extra fields
+		}
+		return detailsMsg{id: id, details: parseDetails(raw)}
+	}
+}
+
+// pruneDetails drops cached details of containers that are gone.
+func (m *Model) pruneDetails(cs []tree.Container) {
+	keep := make(map[string]bool, len(cs))
+	for _, c := range cs {
+		keep[c.ID] = true
+	}
+	for id, d := range m.details {
+		if !keep[id] && d != nil {
+			delete(m.details, id)
+		}
 	}
 }
 

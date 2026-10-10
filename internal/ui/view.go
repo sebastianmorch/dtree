@@ -16,7 +16,7 @@ import (
 const (
 	maxNameWidth  = 32
 	maxImageWidth = 40
-	infoLabel     = 9  // width of the "network  " label column
+	infoLabel     = 12 // width of the "entrypoint  " label column
 	minInfoHeight = 12 // below this terminal height the info panel is hidden
 )
 
@@ -60,7 +60,7 @@ func (m *Model) infoPanel(avail int) []string {
 	var fields []field
 	if c := m.tree.Container(r); c != nil {
 		title, state = c.DisplayName(), containerState(c)
-		fields = containerInfo(c)
+		fields = containerInfo(c, m.details[c.ID])
 	} else {
 		p := m.tree.Project(r)
 		title, state = p.Name, projectState(p)
@@ -313,7 +313,8 @@ func imageText(s string, p painter) string {
 }
 
 // containerInfo lists the selected container's details for the info panel.
-func containerInfo(c *tree.Container) []field {
+// d holds the inspect-only fields; they are left out until it has loaded.
+func containerInfo(c *tree.Container, d *containerDetails) []field {
 	id := c.ID
 	if len(id) > 12 {
 		id = id[:12]
@@ -332,6 +333,17 @@ func containerInfo(c *tree.Container) []field {
 	}
 	if c.Ports != "" {
 		fields = append(fields, field{"ports", c.Ports, colorPorts})
+	}
+	if d != nil {
+		if len(d.Entrypoint) > 0 {
+			fields = append(fields, field{"entrypoint", shellJoin(d.Entrypoint), nil})
+		}
+		if len(d.Cmd) > 0 {
+			fields = append(fields, field{"cmd", shellJoin(d.Cmd), nil})
+		}
+		if d.WorkingDir != "" {
+			fields = append(fields, field{"workdir", d.WorkingDir, colorPath})
+		}
 	}
 	return fields
 }
