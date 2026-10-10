@@ -124,3 +124,13 @@ func TestPortList(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestImageTextKeepsText(t *testing.T) {
+	for _, s := range []string{"acme/shop-api:1.4.2  ", "postgres:16", "moby/buildkit", "localhost:5000/x", "img@sha256:abc", "acme/very-long-na…", ""} {
+		for _, sel := range []bool{false, true} {
+			if got := ansi.Strip(imageText(s, painter{selected: sel})); got != s {
+				t.Errorf("imageText(%q) = %q", s, got)
+			}
+		}
+	}
+}

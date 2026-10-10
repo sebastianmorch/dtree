@@ -161,10 +161,10 @@ func TestInfoPanelForContainer(t *testing.T) {
 	press(t, m, "r", "j")
 	s := screen(m)
 	for _, want := range []string{
-		"  ▶ ● api ",
+		"┃   ● api ",
 		"2h ✅",
 		"─ api ─",
-		" name     shop-api-1 · a1",
+		"│ name     shop-api-1 · a1",
 		" image    594489062793.dkr.ecr.eu-central-1.amazonaws.com/shop:dev",
 		" status   Up 2 hours (healthy)",
 		" ports    8080->8080",
@@ -175,7 +175,7 @@ func TestInfoPanelForContainer(t *testing.T) {
 	}
 	// The panel sits below the list, directly above the footer.
 	lines := strings.Split(s, "\n")
-	if !strings.HasPrefix(lines[len(lines)-2], " ports") {
+	if !strings.HasPrefix(lines[len(lines)-3], "│ ports") {
 		t.Errorf("panel should end right above the footer:\n%s", s)
 	}
 	press(t, m, "j") // db has no ports
@@ -229,14 +229,14 @@ func TestInfoPanelLimits(t *testing.T) {
 	}
 	panel := 0
 	for i, l := range lines {
-		if strings.HasPrefix(l, "─ api") {
+		if strings.HasPrefix(l, "╭─ api") {
 			panel = len(lines) - 1 - i
 		}
 	}
-	if panel == 0 || panel > 9 { // body is 18 rows, panel gets at most half
+	if panel == 0 || panel > 9 { // 19 rows above the hint bar, the panel gets at most half
 		t.Fatalf("panel takes %d rows:\n%s", panel, strings.Join(lines, "\n"))
 	}
-	if !strings.Contains(screen(m), "  ▶ ● api") {
+	if !strings.Contains(screen(m), "┃   ● api") {
 		t.Fatal("selected row must stay visible above the panel")
 	}
 
@@ -260,7 +260,7 @@ func TestNarrowLayoutKeepsImageAndWrapsInfo(t *testing.T) {
 		}
 	}
 	s := strings.Join(lines, "\n")
-	for _, want := range []string{"8081-8083->8081-8083", "amazonaws.com/", "test-authorization-service:branch_master"} {
+	for _, want := range []string{"8081-8083->8081-8083", "test-authorization-service:branch_master"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("screen missing %q:\n%s", want, s)
 		}
@@ -280,7 +280,7 @@ func TestScrollKeepsCursorVisible(t *testing.T) {
 	if len(strings.Split(s, "\n")) != 16 {
 		t.Fatalf("screen height wrong:\n%s", s)
 	}
-	if !strings.Contains(s, "▶ ● svc-29") || !strings.Contains(s, "─ svc-29") {
+	if !strings.Contains(s, "┃   ● svc-29") || !strings.Contains(s, "─ svc-29") {
 		t.Fatalf("selected row and panel not visible:\n%s", s)
 	}
 	press(t, m, "g")
@@ -496,7 +496,7 @@ func TestViewerWrap(t *testing.T) {
 		t.Fatalf("wrapped maxOffset %d", v.maxOffset())
 	}
 	rows := strings.Split(ansi.Strip(v.view()), "\n")
-	if len(rows) != 5 || rows[1] != strings.Repeat("x", 10) {
+	if len(rows) != 6 || rows[1] != "│ "+strings.Repeat("x", 10)+" │" { // border, 3 rows, border, hints
 		t.Fatalf("wrapped view %q", rows)
 	}
 }

@@ -340,19 +340,22 @@ func highlightMatches(s, q string, hl style) string {
 	}
 }
 
-func (v *viewer) header() string {
+func (v *viewer) heading() string {
 	kind := "logs"
 	if v.kind == viewInspect {
 		kind = "inspect"
 	}
-	left := styleTitle.Render("dtree") + styleDim.Render(" › "+kind+" › ") + styleProject.Render(v.title)
+	return styleAccent.Render(kind) + styleDim.Render(" › ") + styleProject.Render(v.title)
+}
 
+// badges are the mode indicators on the right of the top border.
+func (v *viewer) badges() string {
 	var badges []string
 	if v.kind == viewLogs {
 		if v.follow {
-			badges = append(badges, styleBadge.Foreground(colorGreen).Render("FOLLOWING"))
+			badges = append(badges, styleGreen.Render("●")+" "+styleBadge.Foreground(colorGreen).Render("FOLLOWING"))
 		} else {
-			badges = append(badges, styleBadge.Foreground(colorYellow).Render("PAUSED"))
+			badges = append(badges, styleYellow.Render("❚❚")+" "+styleBadge.Foreground(colorYellow).Render("PAUSED"))
 		}
 		if v.timestamps {
 			badges = append(badges, styleDim.Render("timestamps"))
@@ -361,29 +364,32 @@ func (v *viewer) header() string {
 	if v.wrap {
 		badges = append(badges, styleDim.Render("wrap"))
 	}
-	return joinLeftRight(left, strings.Join(badges, " "), v.width)
+	return strings.Join(badges, styleDim.Render(" · "))
 }
 
 func (v *viewer) footer() string {
+	width := v.width + 4
 	if v.searching {
-		return "/" + v.input + "█"
+		return " " + styleAccent.Render("/") + v.input + styleAccent.Render("█")
 	}
 	if v.message != "" {
-		return styleError.Render(v.message)
+		return ansi.Truncate(" "+styleError.Render("✗ "+v.message), width, "…")
 	}
-	hints := "j/k scroll · ^d/^u page · g/G top/bottom · / search · n/N next/prev · w wrap"
+	hints := [][2]string{{"j/k", "scroll"}, {"^d/^u", "page"}, {"g/G", "top/bottom"}, {"/", "search"}, {"n/N", "next/prev"}, {"w", "wrap"}}
 	switch v.kind {
 	case viewLogs:
-		hints += " · f follow · t timestamps"
+		hints = append(hints, [2]string{"f", "follow"}, [2]string{"t", "timestamps"})
 	case viewInspect:
-		hints += " · r refresh"
+		hints = append(hints, [2]string{"r", "refresh"})
 	}
-	hints += " · q back"
-	pos := ""
-	if len(v.lines) > 0 {
-		pos = fmt.Sprintf("%d/%d", min(v.offset+1, len(v.lines)), len(v.lines))
+	return hintBar(append(hints, [2]string{"q", "back"}), width)
+}
+
+func (v *viewer) position() string {
+	if len(v.lines) == 0 {
+		return ""
 	}
-	return joinLeftRight(styleDim.Render(ansi.Truncate(hints, max(0, v.width-len(pos)-2), "…")), styleDim.Render(pos), v.width)
+	return styleDim.Render(fmt.Sprintf("%d/%d", min(v.offset+1, len(v.lines)), len(v.lines)))
 }
 
 func (v *viewer) view() string {
@@ -407,17 +413,13 @@ func (v *viewer) view() string {
 			rows = append(rows, part)
 		}
 	}
-	for len(rows) < v.height {
-		rows = append(rows, "")
-	}
-	return v.header() + "\n" + strings.Join(rows, "\n") + "\n" + v.footer()
-}
-
-// joinLeftRight places right at the right edge of a line of the given width.
-func joinLeftRight(left, right string, width int) string {
-	gap := width - ansi.StringWidth(left) - ansi.StringWidth(right)
-	if gap < 1 {
-		return ansi.Truncate(left, max(0, width-ansi.StringWidth(right)-1), "…") + " " + right
-	}
-	return left + strings.Repeat(" ", gap) + right
+	box := panel{
+		title:       v.heading(),
+		topRight:    v.badges(),
+		bottomRight: v.position(),
+		border:      styleFocus,
+		width:       v.width + 4,
+		height:      v.height,
+	}.render(rows)
+	return strings.Join(box, "\n") + "\n" + v.footer()
 }

@@ -128,7 +128,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.width, m.height = msg.Width, msg.Height
 		if m.viewer != nil {
-			m.viewer.setSize(m.width, m.viewerHeight())
+			m.viewer.setSize(m.viewerWidth(), m.viewerHeight())
 		}
 		return m, nil
 
@@ -416,7 +416,9 @@ func (m *Model) waitEvent() tea.Cmd {
 	}
 }
 
-func (m *Model) viewerHeight() int { return max(1, m.height-2) }
+// The viewer's content area sits inside a border with a hint bar below.
+func (m *Model) viewerWidth() int  { return max(1, m.width-4) }
+func (m *Model) viewerHeight() int { return max(1, m.height-3) }
 
 func (m *Model) openViewer(kind viewKind, c tree.Container) {
 	m.stopLogs()
@@ -425,7 +427,7 @@ func (m *Model) openViewer(kind viewKind, c tree.Container) {
 		title = c.Project + "/" + title
 	}
 	m.target = c
-	m.viewer = newViewer(kind, title, m.width, m.viewerHeight())
+	m.viewer = newViewer(kind, title, m.viewerWidth(), m.viewerHeight())
 	m.mode = modeViewer
 }
 

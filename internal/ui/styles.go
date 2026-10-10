@@ -12,20 +12,29 @@ var (
 	colorBlue   = lipgloss.AdaptiveColor{Light: "#0969da", Dark: "#58a6ff"}
 	colorPurple = lipgloss.AdaptiveColor{Light: "#8250df", Dark: "#d2a8ff"}
 	colorCyan   = lipgloss.AdaptiveColor{Light: "#1b7c83", Dark: "#76e3ea"}
-	colorSelBg  = lipgloss.AdaptiveColor{Light: "#ddf4ff", Dark: "#264f78"}
+	colorSelBg  = lipgloss.AdaptiveColor{Light: "#ddf4ff", Dark: "#1f3048"}
+	colorAccent = colorBlue
+	colorBorder = lipgloss.AdaptiveColor{Light: "#d0d7de", Dark: "#3d444d"}
+	colorOnAcc  = lipgloss.AdaptiveColor{Light: "#ffffff", Dark: "#0d1117"}
 
 	styleTitle    = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
 	styleDim      = lipgloss.NewStyle().Foreground(colorGrey)
 	styleProject  = lipgloss.NewStyle().Bold(true)
-	styleSelected = lipgloss.NewStyle().Bold(true).Background(colorSelBg)
+	styleAccent   = lipgloss.NewStyle().Foreground(colorAccent)
+	styleBorder   = lipgloss.NewStyle().Foreground(colorBorder)
+	styleFocus    = lipgloss.NewStyle().Foreground(colorAccent)
+	styleLogo     = lipgloss.NewStyle().Bold(true).Foreground(colorOnAcc).Background(colorAccent).Padding(0, 1)
 	styleGreen    = lipgloss.NewStyle().Foreground(colorGreen)
 	styleYellow   = lipgloss.NewStyle().Foreground(colorYellow)
 	styleRed      = lipgloss.NewStyle().Foreground(colorRed)
 	styleError    = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
 	styleKey      = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
-	styleBadge    = lipgloss.NewStyle().Bold(true).Padding(0, 1)
+	styleBadge    = lipgloss.NewStyle().Bold(true)
 	styleMatch    = lipgloss.NewStyle().Background(colorYellow).Foreground(lipgloss.Color("#000000"))
 	styleCurMatch = lipgloss.NewStyle().Background(colorRed).Foreground(lipgloss.Color("#ffffff")).Bold(true)
+	styleLabel    = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	styleImage    = lipgloss.NewStyle().Foreground(colorCyan)
+	styleTag      = lipgloss.NewStyle().Foreground(colorPurple)
 	styleMarker   = lipgloss.NewStyle().Foreground(colorGrey).Italic(true)
 
 	styleYAMLKey    = lipgloss.NewStyle().Foreground(colorBlue)

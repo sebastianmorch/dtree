@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/sebastianmorch/dtree/internal/tree"
@@ -31,89 +32,111 @@ func (m *Model) View() string {
 }
 
 func (m *Model) treeView() string {
-	bodyHeight := max(1, m.height-2)
-	panel := m.infoPanel(bodyHeight)
-	listHeight := bodyHeight - len(panel)
-	body := m.treeBody(listHeight)
-	for len(body) < listHeight {
-		body = append(body, "")
-	}
-	body = append(body, panel...)
-	return m.treeHeader() + "\n" + strings.Join(body, "\n") + "\n" + m.treeFooter()
+	avail := max(3, m.height-1) // the last row is the hint bar
+	info := m.infoPanel(avail)
+	listHeight := max(1, avail-len(info)-2)
+	list := panel{
+		title:    m.treeTitle(),
+		topRight: m.connStatus(),
+		border:   styleFocus,
+		width:    m.width,
+		height:   listHeight,
+	}.render(m.treeBody(listHeight))
+	return strings.Join(append(append(list, info...), m.treeFooter()), "\n")
 }
 
-// infoPanel renders the section below the list for the selected row: a
-// title rule plus the container's or project's details. It takes at most
-// half of the body and is hidden on very short terminals.
-func (m *Model) infoPanel(bodyHeight int) []string {
+// listWidth is the content width inside the bordered list.
+func (m *Model) listWidth() int { return max(0, m.width-4) }
+
+// infoPanel renders the box below the list for the selected row: the
+// container's or project's details. It takes at most half of the screen and
+// is hidden on very short terminals.
+func (m *Model) infoPanel(avail int) []string {
 	r, ok := m.tree.Selected()
 	if !ok || !m.loaded || m.height < minInfoHeight {
 		return nil
 	}
-	var title string
-	var fields [][2]string
+	var title, state string
+	var fields []field
 	if c := m.tree.Container(r); c != nil {
-		title = c.DisplayName()
+		title, state = c.DisplayName(), containerState(c)
 		fields = containerInfo(c)
 	} else {
 		p := m.tree.Project(r)
-		title = p.Name
+		title, state = p.Name, projectState(p)
 		fields = projectInfo(p)
 	}
 
-	lines := []string{styleDim.Render("─ ") + styleProject.Render(title) + " " +
-		styleDim.Render(strings.Repeat("─", max(0, m.width-ansi.StringWidth(title)-3)))}
-	avail := max(10, m.width-1-infoLabel)
+	var lines []string
+	valueWidth := max(10, m.listWidth()-infoLabel)
 	for _, f := range fields {
-		label := padRight(f[0], infoLabel)
-		for _, part := range wrapValue(f[1], avail) {
-			lines = append(lines, " "+styleDim.Render(label)+part)
+		label := padRight(f.label, infoLabel)
+		for _, part := range wrapValue(f.value, valueWidth) {
+			if f.color != nil {
+				part = f.color(part)
+			}
+			lines = append(lines, styleLabel.Render(label)+part)
 			label = strings.Repeat(" ", infoLabel)
 		}
 	}
-
-	if limit := bodyHeight / 2; len(lines) > limit {
+	if limit := avail/2 - 2; len(lines) > limit {
+		if limit < 1 {
+			return nil
+		}
 		lines = lines[:limit]
-		lines[limit-1] = " " + styleDim.Render("…")
+		lines[limit-1] = styleDim.Render("…")
 	}
-	for i, l := range lines {
-		lines[i] = ansi.Truncate(l, m.width, "…")
-	}
-	return lines
+	return panel{
+		title:    styleProject.Render(title),
+		topRight: state,
+		border:   styleBorder,
+		width:    m.width,
+		height:   len(lines),
+	}.render(lines)
 }
 
-func (m *Model) treeHeader() string {
+func (m *Model) treeTitle() string {
 	scope := "running"
 	if m.showAll {
 		scope = "all containers"
 	}
+	title := styleLogo.Render("dtree") + " " + styleDim.Render(scope)
 	if f := m.tree.Filter(); f != "" {
-		scope += " · filter: " + f
+		title += styleDim.Render(" · filter: ") + styleAccent.Render(f)
 	}
-	conn := styleGreen.Render("●") + styleDim.Render(" connected")
+	return title
+}
+
+func (m *Model) connStatus() string {
 	if !m.connected {
-		conn = styleRed.Render("●") + styleDim.Render(" disconnected")
+		return styleRed.Render("●") + styleDim.Render(" disconnected")
 	}
-	return joinLeftRight(styleTitle.Render("dtree")+styleDim.Render(" · "+scope), conn, m.width)
+	return styleGreen.Render("●") + styleDim.Render(" connected")
+}
+
+var treeHints = [][2]string{
+	{"j/k", "move"}, {"h/l", "fold"}, {"enter", "shell"}, {"space", "logs"},
+	{"i", "inspect"}, {"/", "filter"}, {"a", "all"}, {"?", "help"}, {"q", "quit"},
 }
 
 func (m *Model) treeFooter() string {
 	if m.filtering {
-		return ansi.Truncate("/"+m.tree.Filter()+"█", m.width, "…") +
-			styleDim.Render("  enter keep · esc clear · ↑/↓ move")
+		input := " " + styleAccent.Render("/") + m.tree.Filter() + styleAccent.Render("█") + "  "
+		hints := hintBar([][2]string{{"enter", "keep"}, {"esc", "clear"}, {"↑/↓", "move"}},
+			max(0, m.width-ansi.StringWidth(input)))
+		return ansi.Truncate(input+hints, m.width, "…")
 	}
 	if m.status != "" {
-		st := styleDim
 		if m.statusErr {
-			st = styleError
+			return ansi.Truncate(" "+styleError.Render("✗ "+m.status), m.width, "…")
 		}
-		return ansi.Truncate(st.Render(m.status), m.width, "…")
+		return ansi.Truncate(" "+styleAccent.Render("› ")+m.status, m.width, "…")
 	}
-	hints := "j/k move · h/l fold · / or f filter · L logs · i inspect · s shell · a all · r refresh · ? help · q quit"
+	hints := treeHints
 	if m.tree.Filter() != "" {
-		hints = "esc clear filter · " + hints
+		hints = append([][2]string{{"esc", "clear filter"}}, hints...)
 	}
-	return styleDim.Render(ansi.Truncate(hints, m.width, "…"))
+	return hintBar(hints, m.width)
 }
 
 // columns holds the widths of the compact container row; 0 hides a column.
@@ -122,10 +145,10 @@ type columns struct {
 }
 
 // layout sizes the columns to their content, then shrinks them to fit the
-// terminal: long names first (down to 24 cells, so one long name doesn't
-// cost every row its image), then the image (down to 16), then the name
-// (down to 12), then the image again until it is hidden. Details of the selected container
-// are shown in full below its row, so nothing is lost for good.
+// list: long names first (down to 24 cells, so one long name doesn't cost
+// every row its image), then the image (down to 16), then the name (down to
+// 12), then the image again until it is hidden. The info panel shows the
+// details in full, so nothing is lost for good.
 func (m *Model) layout() columns {
 	var c columns
 	for _, p := range m.tree.Projects() {
@@ -138,8 +161,8 @@ func (m *Model) layout() columns {
 	c.name = min(c.name, maxNameWidth)
 	c.image = min(c.image, maxImageWidth)
 
-	// indent(4) + dot(1) + space(1) + name, then 2 spaces before each column.
-	over := 6 + c.name + 2 + c.image + 2 + c.status - m.width
+	// gutter(2) + indent(2) + dot(1) + space(1) + name, then 2 spaces before each column.
+	over := 6 + c.name + 2 + c.image + 2 + c.status - m.listWidth()
 	shrink := func(w *int, floor int) {
 		if d := min(over, max(0, *w-floor)); d > 0 {
 			*w -= d
@@ -188,90 +211,127 @@ func (m *Model) treeBody(height int) []string {
 		projWidth = max(projWidth, ansi.StringWidth(p.Name))
 	}
 
+	width := m.listWidth()
 	out := make([]string, 0, height)
 	for i := m.treeOffset; i < len(rows) && len(out) < height; i++ {
 		r := rows[i]
-		selected := i == cursor
+		p := painter{selected: i == cursor}
+		gutter := p.paint(styleDim, "  ")
+		if p.selected {
+			gutter = p.paint(styleAccent, "┃ ")
+		}
 		var line string
 		if r.IsProject() {
-			line = m.projectRow(r, projWidth, selected)
+			line = gutter + m.projectRow(r, projWidth, p)
 		} else {
-			line = containerRow(m.tree.Container(r), cols, selected)
+			line = gutter + containerRow(m.tree.Container(r), cols, p)
 		}
-		line = ansi.Truncate(line, m.width, "…")
-		if selected {
-			line = styleSelected.Render(padRight(ansi.Strip(line), m.width))
+		line = ansi.Truncate(line, width, "…")
+		if p.selected {
+			line += p.paint(styleDim, strings.Repeat(" ", max(0, width-ansi.StringWidth(line))))
 		}
 		out = append(out, line)
 	}
 	return out
 }
 
-func (m *Model) projectRow(r tree.Row, nameWidth int, selected bool) string {
-	p := m.tree.Project(r)
+func (m *Model) projectRow(r tree.Row, nameWidth int, p painter) string {
+	pr := m.tree.Project(r)
 	arrow := "▾"
-	if m.tree.IsCollapsed(p.Name) {
+	if m.tree.IsCollapsed(pr.Name) {
 		arrow = "▸"
 	}
-	count := fmt.Sprintf("%d/%d running", p.Running(), len(p.Containers))
+	count := fmt.Sprintf("%d/%d running", pr.Running(), len(pr.Containers))
 	if m.tree.Filter() != "" {
-		count = fmt.Sprintf("%d/%d matching", m.tree.Matching(r), len(p.Containers))
-	}
-	if selected {
-		return arrow + " " + padRight(p.Name, nameWidth) + "  " + count
+		count = fmt.Sprintf("%d/%d matching", m.tree.Matching(r), len(pr.Containers))
 	}
 	countStyle := styleDim
-	switch p.Health() {
+	switch pr.Health() {
 	case tree.Degraded:
 		countStyle = styleYellow
 	case tree.Failing:
 		countStyle = styleRed
 	}
-	return styleDim.Render(arrow) + " " + styleProject.Render(padRight(p.Name, nameWidth)) + "  " + countStyle.Render(count)
+	nameStyle := styleProject
+	if p.selected {
+		nameStyle = nameStyle.Foreground(colorAccent)
+	}
+	return p.paint(styleAccent, arrow+" ") + p.paint(nameStyle, padRight(pr.Name, nameWidth)) +
+		p.paint(styleDim, "  ") + p.paint(countStyle, count)
 }
 
-func containerRow(c *tree.Container, cols columns, selected bool) string {
-	prefix, dot := "    ", "●"
-	if selected {
-		prefix = "  ▶ "
-	} else {
-		switch {
-		case c.Health() == tree.Degraded:
-			dot = styleYellow.Render(dot)
-		case c.Running():
-			dot = styleGreen.Render(dot)
-		default:
-			dot = styleDim.Render(dot)
-		}
+func containerRow(c *tree.Container, cols columns, p painter) string {
+	dotStyle := styleDim
+	switch {
+	case c.Health() == tree.Degraded:
+		dotStyle = styleYellow
+	case c.Running():
+		dotStyle = styleGreen
+	}
+	nameStyle := lipgloss.NewStyle()
+	if p.selected {
+		nameStyle = styleProject
 	}
 
 	var b strings.Builder
-	b.WriteString(prefix + dot + " ")
-	b.WriteString(fit(c.DisplayName(), cols.name))
+	b.WriteString(p.paint(dotStyle, "  ●") + p.paint(styleDim, " "))
+	b.WriteString(p.paint(nameStyle, fit(c.DisplayName(), cols.name)))
 	if cols.image > 0 {
-		img := fit(shortImage(c.Image), cols.image)
-		if !selected {
-			img = styleDim.Render(img)
-		}
-		b.WriteString("  " + img)
+		b.WriteString(p.paint(styleDim, "  ") + imageText(fit(shortImage(c.Image), cols.image), p))
 	}
-	b.WriteString("  " + compactStatus(*c))
+	statusStyle := styleDim
+	if !c.Running() {
+		statusStyle = styleYellow
+	}
+	b.WriteString(p.paint(styleDim, "  ") + p.paint(statusStyle, shortStatus(*c)))
+	if icon := healthIcon(*c); icon != "" {
+		b.WriteString(p.paint(styleDim, " "+icon))
+	}
 	return b.String()
 }
 
+// imageText colours an image reference so its parts are easy to tell
+// apart: the namespace dim, the repository name cyan and the tag (or
+// digest) purple. It works on already-fitted text, so a cut tag or trailing
+// padding is fine.
+func imageText(s string, p painter) string {
+	text := strings.TrimRight(s, " ")
+	pad := s[len(text):]
+	name, tag := text, ""
+	if i := strings.LastIndexAny(text, ":@"); i > strings.LastIndex(text, "/") {
+		name, tag = text[:i], text[i:]
+	}
+	ns := ""
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		ns, name = name[:i+1], name[i+1:]
+	}
+	out := p.paint(styleDim, ns) + p.paint(styleImage, name)
+	if tag != "" {
+		out += p.paint(styleDim, tag[:1]) + p.paint(styleTag, tag[1:])
+	}
+	return out + p.paint(styleDim, pad)
+}
+
 // containerInfo lists the selected container's details for the info panel.
-func containerInfo(c *tree.Container) [][2]string {
+func containerInfo(c *tree.Container) []field {
 	id := c.ID
 	if len(id) > 12 {
 		id = id[:12]
 	}
-	fields := [][2]string{
-		{"name", c.Name + " · " + id},
-		{"image", c.Image},
-		{"status", c.Status},
+	fields := []field{
+		{"name", c.Name + " · " + id, func(s string) string {
+			return colorList(s, func(item string) string {
+				if item == id {
+					return styleDim.Render(item)
+				}
+				return item
+			})
+		}},
+		{"image", c.Image, func(s string) string { return imageText(s, painter{}) }},
+		{"status", c.Status, statusColor(c)},
 	}
 	if c.Ports != "" {
-		fields = append(fields, [2]string{"ports", c.Ports})
+		fields = append(fields, field{"ports", c.Ports, colorPorts})
 	}
 	return fields
 }
@@ -279,7 +339,7 @@ func containerInfo(c *tree.Container) [][2]string {
 // projectInfo summarises a project for the info panel. It only uses the
 // listed containers, so with "running only" exited containers are not
 // counted. Empty fields are left out.
-func projectInfo(p *tree.Project) [][2]string {
+func projectInfo(p *tree.Project) []field {
 	var dir string
 	var files, networks, volumes []string
 	var ports []int
@@ -306,13 +366,14 @@ func projectInfo(p *tree.Project) [][2]string {
 	slices.Sort(volumes)
 	slices.Sort(ports)
 
-	var fields [][2]string
-	add := func(label, value string) {
+	var fields []field
+	add := func(label, value string, color func(string) string) {
 		if value != "" {
-			fields = append(fields, [2]string{label, value})
+			fields = append(fields, field{label, value, color})
 		}
 	}
-	add("dir", homeRelative(dir))
+	plainItems := func(s string) string { return colorList(s, nil) }
+	add("dir", homeRelative(dir), colorPath)
 	for i, f := range files {
 		if rel, ok := strings.CutPrefix(f, dir+"/"); ok && dir != "" {
 			files[i] = rel
@@ -320,11 +381,11 @@ func projectInfo(p *tree.Project) [][2]string {
 			files[i] = homeRelative(f)
 		}
 	}
-	add("file", strings.Join(files, ", "))
-	add("state", stateSummary(states, health))
-	add("ports", portList(ports))
-	add("network", strings.Join(networks, ", "))
-	add("volumes", volumeList(volumes))
+	add("file", strings.Join(files, ", "), func(s string) string { return colorList(s, colorPath) })
+	add("state", stateSummary(states, health), colorStates)
+	add("ports", portList(ports), colorHostPorts)
+	add("network", strings.Join(networks, ", "), plainItems)
+	add("volumes", volumeList(volumes), plainItems)
 	return fields
 }
 
@@ -490,8 +551,8 @@ var helpSections = []struct {
 		{"q / ctrl+c", "quit"},
 	}},
 	{"Logs & inspect", [][2]string{
-		{"j/k  ↓/↑", "scroll"},
-		{"ctrl+d / ctrl+u", "half page down / up"},
+		{"j/k / ↓/↑", "scroll"},
+		{"^d / ^u", "half page down / up"},
 		{"g / G", "top / bottom (G resumes follow)"},
 		{"/  n  N", "search, next, previous"},
 		{"f", "toggle follow (logs)"},
@@ -503,14 +564,34 @@ var helpSections = []struct {
 }
 
 func (m *Model) helpView() string {
-	var b strings.Builder
-	b.WriteString(styleTitle.Render("dtree") + styleDim.Render(" · keys") + "\n")
-	for _, s := range helpSections {
-		b.WriteString("\n" + styleProject.Render(s.title) + "\n")
-		for _, k := range s.keys {
-			b.WriteString("  " + styleKey.Render(padRight(k[0], 18)) + k[1] + "\n")
+	var cols []string
+	for _, sec := range helpSections {
+		keyWidth := 0
+		for _, k := range sec.keys {
+			keyWidth = max(keyWidth, ansi.StringWidth(k[0]))
 		}
+		lines := []string{styleProject.Render(sec.title)}
+		for _, k := range sec.keys {
+			lines = append(lines, styleKey.Render(padRight(k[0], keyWidth+2))+k[1])
+		}
+		cols = append(cols, strings.Join(lines, "\n"))
 	}
-	b.WriteString("\n" + styleDim.Render("press any key to close"))
-	return b.String()
+	// Sections side by side when they fit, stacked otherwise.
+	body := lipgloss.JoinHorizontal(lipgloss.Top, cols[0], "   ", cols[1])
+	if lipgloss.Width(body)+4 > m.width {
+		body = cols[0] + "\n\n" + cols[1]
+	}
+	lines := strings.Split(body, "\n")
+	lines = append(lines, "", styleDim.Render("press any key to close"))
+	if limit := max(1, m.height-2); len(lines) > limit {
+		lines = lines[:limit]
+		lines[limit-1] = styleDim.Render("… (taller window shows more)")
+	}
+	box := panel{
+		title:  styleLogo.Render("dtree") + " " + styleDim.Render("keys"),
+		border: styleFocus,
+		width:  min(m.width, lipgloss.Width(body)+4),
+		height: len(lines),
+	}.render(lines)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, strings.Join(box, "\n"))
 }
