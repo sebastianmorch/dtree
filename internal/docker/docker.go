@@ -3,6 +3,7 @@
 package docker
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -43,8 +45,34 @@ type LogOptions struct {
 	Timestamps bool
 }
 
-// Client is everything the UI needs from Docker. Exec is not part of it: the
-// UI runs the docker CLI directly so it gets proper TTY handling.
+// ExecResult is how a command started with Exec ended.
+type ExecResult struct {
+	ExitCode int
+	Err      error // set when the command's outcome is unknown
+}
+
+// ExecOptions describes a command for Exec. Width and Height size its
+// terminal.
+type ExecOptions struct {
+	Command       string
+	Width, Height int
+}
+
+// ExecSession is a running Exec command.
+type ExecSession struct {
+	// Lines streams the output and closes when the command ends; then
+	// Result receives exactly one value.
+	Lines  <-chan LogLine
+	Result <-chan ExecResult
+	// Interrupt types Ctrl+C into the command's terminal, which signals the
+	// command and everything it started. With force it kills them instead,
+	// for commands that ignore Ctrl+C.
+	Interrupt func(force bool) error
+}
+
+// Client is everything the UI needs from Docker. Interactive shells are not
+// part of it: the UI runs the docker CLI directly so it gets proper TTY
+// handling.
 type Client interface {
 	List(ctx context.Context, all bool) ([]tree.Container, error)
 	// Events emits a value whenever a container changes. Bursts are
@@ -55,6 +83,11 @@ type Client interface {
 	Logs(ctx context.Context, id string, opts LogOptions) (<-chan LogLine, error)
 	// Inspect returns the raw JSON of docker inspect.
 	Inspect(ctx context.Context, id string) ([]byte, error)
+	// Exec runs a command with sh -c in a terminal in the container and
+	// streams its output. Docker cannot kill an exec'd process, so it is
+	// stopped through its terminal with Interrupt; cancelling ctx only stops
+	// the stream.
+	Exec(ctx context.Context, id string, opts ExecOptions) (*ExecSession, error)
 }
 
 // SDK is the Client backed by the Docker Engine API.
@@ -333,6 +366,101 @@ func (s *SDK) Logs(ctx context.Context, id string, opts LogOptions) (<-chan LogL
 func (s *SDK) Inspect(ctx context.Context, id string) ([]byte, error) {
 	_, raw, err := s.cli.ContainerInspectWithRaw(ctx, id, false)
 	return raw, err
+}
+
+func (s *SDK) Exec(ctx context.Context, id string, opts ExecOptions) (*ExecSession, error) {
+	size := &[2]uint{uint(max(1, opts.Height)), uint(max(1, opts.Width))}
+	created, err := s.cli.ContainerExecCreate(ctx, id, container.ExecOptions{
+		// The shell reports its PID, which leads the command's process group,
+		// then becomes the command.
+		Cmd:          []string{"sh", "-c", `echo "$$"; exec sh -c "$1"`, "sh", opts.Command},
+		Env:          []string{"PAGER=cat"}, // a pager would wait for keys that never come
+		Tty:          true,
+		ConsoleSize:  size,
+		AttachStdin:  true, // the terminal's input carries Ctrl+C
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.cli.ContainerExecAttach(ctx, created.ID, container.ExecAttachOptions{Tty: true, ConsoleSize: size})
+	if err != nil {
+		return nil, err
+	}
+	lines := make(chan LogLine, 512)
+	result := make(chan ExecResult, 1)
+	var pgid atomic.Int64
+	go func() {
+		defer resp.Close()
+		stop := context.AfterFunc(ctx, resp.Close) // unblocks the read on cancel
+		defer stop()
+		r := bufio.NewReader(resp.Reader)
+		first, err := r.ReadString('\n')
+		if pid, perr := strconv.Atoi(strings.TrimSpace(first)); perr == nil {
+			pgid.Store(int64(pid))
+		}
+		// A terminal has a single stream; stdout and stderr are mixed.
+		out := &lineWriter{ctx: ctx, ch: lines}
+		if err == nil {
+			_, err = io.Copy(out, r)
+		}
+		out.Flush()
+		close(lines)
+		if err != nil {
+			result <- ExecResult{ExitCode: -1, Err: err}
+			return
+		}
+		result <- s.execExit(ctx, created.ID)
+	}()
+	interrupt := func(force bool) error {
+		if !force {
+			_, err := io.WriteString(resp.Conn, "\x03")
+			return err
+		}
+		pid := pgid.Load()
+		if pid == 0 {
+			return fmt.Errorf("process ID not known yet")
+		}
+		return s.kill(id, pid)
+	}
+	return &ExecSession{Lines: lines, Result: result, Interrupt: interrupt}, nil
+}
+
+// kill sends SIGKILL to a process group in the container through a second
+// exec, since the Engine API has no way to signal an exec'd process.
+func (s *SDK) kill(id string, pgid int64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	created, err := s.cli.ContainerExecCreate(ctx, id, container.ExecOptions{
+		Cmd: []string{"kill", "-KILL", "--", "-" + strconv.FormatInt(pgid, 10)},
+	})
+	if err != nil {
+		return err
+	}
+	// kill's exit code is not checked: busybox reports 1 even when the
+	// group was killed. A command that survives can be killed again.
+	return s.cli.ContainerExecStart(ctx, created.ID, container.ExecStartOptions{})
+}
+
+// execExit reads the exit code of a finished exec. The daemon can report the
+// exec as running for a moment after its output stream has closed.
+func (s *SDK) execExit(ctx context.Context, execID string) ExecResult {
+	for range 20 {
+		info, err := s.cli.ContainerExecInspect(ctx, execID)
+		if err != nil {
+			return ExecResult{ExitCode: -1, Err: err}
+		}
+		if !info.Running {
+			return ExecResult{ExitCode: info.ExitCode}
+		}
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-ctx.Done():
+			return ExecResult{ExitCode: -1, Err: ctx.Err()}
+		}
+	}
+	return ExecResult{ExitCode: -1, Err: fmt.Errorf("exit code not available")}
 }
 
 // lineWriter splits a byte stream into lines and sends them on ch. stdcopy

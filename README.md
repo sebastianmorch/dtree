@@ -12,6 +12,14 @@ open a shell, all with vim keys or the arrow keys.
   volumes).
 - Logs and inspect open in a built-in viewer with search, follow and line wrap.
   Inspect output is shown as YAML.
+- Quick commands: press `x` on a container, type a shell command and its
+  output streams into a popup. Close the popup and the command keeps running;
+  the container's row shows whether it is still running (⟳), succeeded (✓),
+  failed (✗) or was stopped (■), and `X` brings the output back. `ctrl+c` in
+  the popup stops a running command; press it again to kill a command that
+  ignores it. Commands run with `sh -c` in a terminal but can't read your
+  keyboard, so a command that asks for input waits until you stop it. Use `s`
+  for interactive programs. Quitting dtree stops commands that are still running.
 
 ## Install
 
@@ -58,11 +66,13 @@ Press `?` inside dtree for this list.
 | `L` | logs |
 | `i` | inspect |
 | `s` | shell (bash, falls back to sh) |
+| `x` | run a command (output in a popup; `↑`/`↓` for history) |
+| `X` | show the last command's output |
 | `a` | toggle running / all containers |
 | `r` | refresh |
 | `q` / `ctrl+c` | quit |
 
-### Logs & inspect
+### Logs, inspect & command output
 
 | Key | Action |
 | --- | --- |
@@ -70,11 +80,12 @@ Press `?` inside dtree for this list.
 | `ctrl+d` / `ctrl+u` | half page down / up |
 | `g` / `G` | top / bottom (`G` resumes follow) |
 | `/`, `n`, `N` | search, next, previous |
-| `f` | toggle follow (logs) |
+| `f` | toggle follow (logs, output) |
 | `t` | toggle timestamps (logs) |
 | `r` | refresh (inspect) |
 | `w` | toggle line wrap |
-| `q` / `esc` | back |
+| `q` / `esc` | back · close popup |
+| `ctrl+c` | stop the running command (popup); again to kill it |
 
 ## Development
 

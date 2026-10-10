@@ -42,7 +42,16 @@ func (m *Model) treeView() string {
 		width:    m.width,
 		height:   listHeight,
 	}.render(m.treeBody(listHeight))
-	return strings.Join(append(append(list, info...), m.treeFooter()), "\n")
+	lines := append(list, info...)
+	footer := m.treeFooter()
+	switch v := m.popupViewer(); {
+	case m.prompting:
+		lines = overlay(lines, m.promptBox(), m.width)
+	case v != nil:
+		lines = overlay(lines, v.box(), m.width)
+		footer = v.footerWidth(m.width)
+	}
+	return strings.Join(append(lines, footer), "\n")
 }
 
 // listWidth is the content width inside the bordered list.
@@ -116,10 +125,13 @@ func (m *Model) connStatus() string {
 
 var treeHints = [][2]string{
 	{"j/k", "move"}, {"h/l", "fold"}, {"enter", "shell"}, {"space", "logs"},
-	{"i", "inspect"}, {"/", "filter"}, {"a", "all"}, {"?", "help"}, {"q", "quit"},
+	{"i", "inspect"}, {"x", "run"}, {"/", "filter"}, {"a", "all"}, {"?", "help"}, {"q", "quit"},
 }
 
 func (m *Model) treeFooter() string {
+	if m.prompting {
+		return m.promptFooter()
+	}
 	if m.filtering {
 		input := " " + styleAccent.Render("/") + m.tree.Filter() + styleAccent.Render("█") + "  "
 		hints := hintBar([][2]string{{"enter", "keep"}, {"esc", "clear"}, {"↑/↓", "move"}},
@@ -224,7 +236,8 @@ func (m *Model) treeBody(height int) []string {
 		if r.IsProject() {
 			line = gutter + m.projectRow(r, projWidth, p)
 		} else {
-			line = gutter + containerRow(m.tree.Container(r), cols, p)
+			c := m.tree.Container(r)
+			line = gutter + containerRow(c, cols, p, m.jobs[c.ID])
 		}
 		line = ansi.Truncate(line, width, "…")
 		if p.selected {
@@ -260,7 +273,8 @@ func (m *Model) projectRow(r tree.Row, nameWidth int, p painter) string {
 		p.paint(styleDim, "  ") + p.paint(countStyle, count)
 }
 
-func containerRow(c *tree.Container, cols columns, p painter) string {
+// containerRow renders a container; j is its last quick command, if any.
+func containerRow(c *tree.Container, cols columns, p painter, j *job) string {
 	dotStyle := styleDim
 	switch {
 	case c.Health() == tree.Degraded:
@@ -286,6 +300,9 @@ func containerRow(c *tree.Container, cols columns, p painter) string {
 	b.WriteString(p.paint(styleDim, "  ") + p.paint(statusStyle, shortStatus(*c)))
 	if icon := healthIcon(*c); icon != "" {
 		b.WriteString(p.paint(styleDim, " "+icon))
+	}
+	if j != nil {
+		b.WriteString(p.paint(styleDim, "  ") + j.rowBadge(p))
 	}
 	return b.String()
 }
@@ -558,20 +575,23 @@ var helpSections = []struct {
 		{"L", "logs"},
 		{"i", "inspect"},
 		{"s", "shell (bash, falls back to sh)"},
+		{"x", "run a command (output in a popup)"},
+		{"X", "show the last command's output"},
 		{"a", "toggle running / all containers"},
 		{"r", "refresh"},
 		{"q / ctrl+c", "quit"},
 	}},
-	{"Logs & inspect", [][2]string{
+	{"Logs, inspect & output", [][2]string{
 		{"j/k / ↓/↑", "scroll"},
 		{"^d / ^u", "half page down / up"},
 		{"g / G", "top / bottom (G resumes follow)"},
 		{"/  n  N", "search, next, previous"},
-		{"f", "toggle follow (logs)"},
+		{"f", "toggle follow (logs, output)"},
 		{"t", "toggle timestamps (logs)"},
 		{"r", "refresh (inspect)"},
 		{"w", "toggle line wrap"},
-		{"q / esc", "back"},
+		{"q / esc", "back · close popup"},
+		{"ctrl+c", "stop command (popup), again to kill"},
 	}},
 }
 

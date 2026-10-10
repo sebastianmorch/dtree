@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,6 +24,15 @@ type fakeClient struct {
 	inspects     int
 	events       chan struct{}
 	eventErrs    chan error
+
+	execOut   []docker.LogLine
+	execExit  int
+	execHold  chan struct{} // when set, commands run until it is closed or stopped
+	ignoreInt bool          // commands ignore Ctrl+C
+	execs     []string      // "id: command" of each Exec call
+
+	mu         sync.Mutex
+	interrupts []bool // force flag of each Interrupt call
 }
 
 func newFake() *fakeClient {
@@ -64,6 +74,40 @@ func (f *fakeClient) Inspect(context.Context, string) ([]byte, error) {
 	return []byte(f.inspect), nil
 }
 
+func (f *fakeClient) Exec(_ context.Context, id string, opts docker.ExecOptions) (*docker.ExecSession, error) {
+	f.execs = append(f.execs, id+": "+opts.Command)
+	lines := make(chan docker.LogLine, len(f.execOut))
+	result := make(chan docker.ExecResult, 1)
+	for _, l := range f.execOut {
+		lines <- l
+	}
+	hold, exit, ignoreInt := f.execHold, f.execExit, f.ignoreInt
+	stop := make(chan int, 2)
+	go func() {
+		if hold != nil {
+			select {
+			case <-hold:
+			case exit = <-stop:
+			}
+		}
+		close(lines)
+		result <- docker.ExecResult{ExitCode: exit}
+	}()
+	interrupt := func(force bool) error {
+		f.mu.Lock()
+		f.interrupts = append(f.interrupts, force)
+		f.mu.Unlock()
+		switch {
+		case force:
+			stop <- 137
+		case !ignoreInt:
+			stop <- 130
+		}
+		return nil
+	}
+	return &docker.ExecSession{Lines: lines, Result: result, Interrupt: interrupt}, nil
+}
+
 // run executes cmd and feeds resulting messages back into the model until
 // no commands remain. Ticks and blocking event waits are skipped.
 func run(t *testing.T, m *Model, cmd tea.Cmd) {
@@ -90,6 +134,10 @@ func run(t *testing.T, m *Model, cmd tea.Cmd) {
 	}
 }
 
+// late holds the results of commands that blocked past runWithTimeout, for
+// settle. setup resets it so no message reaches another test's model.
+var late []chan tea.Msg
+
 // runWithTimeout returns nil for commands that block (event waits, ticks).
 func runWithTimeout(c tea.Cmd) tea.Msg {
 	done := make(chan tea.Msg, 1)
@@ -98,7 +146,28 @@ func runWithTimeout(c tea.Cmd) tea.Msg {
 	case msg := <-done:
 		return msg
 	case <-timeAfter():
+		late = append(late, done)
 		return nil
+	}
+}
+
+// settle delivers results of blocked commands that have finished since, such
+// as output reads of a command that was stopped.
+func settle(t *testing.T, m *Model) {
+	t.Helper()
+	for progress := true; progress; {
+		progress = false
+		pending := late
+		late = nil
+		for _, ch := range pending {
+			select {
+			case msg := <-ch:
+				progress = true
+				run(t, m, func() tea.Msg { return msg })
+			case <-timeAfter():
+				late = append(late, ch)
+			}
+		}
 	}
 }
 
@@ -121,6 +190,8 @@ func press(t *testing.T, m *Model, keys ...string) {
 			msg = tea.KeyMsg{Type: tea.KeyLeft}
 		case "right":
 			msg = tea.KeyMsg{Type: tea.KeyRight}
+		case "ctrl+c":
+			msg = tea.KeyMsg{Type: tea.KeyCtrlC}
 		default:
 			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 		}
@@ -131,6 +202,7 @@ func press(t *testing.T, m *Model, keys ...string) {
 
 func setup(t *testing.T) (*Model, *fakeClient) {
 	t.Helper()
+	late = nil
 	f := newFake()
 	m := New(f, false)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
@@ -607,5 +679,157 @@ func TestClearScreenExecClearsBeforeRunning(t *testing.T) {
 	}
 	if out.String() != clearScreen+"hi\n" {
 		t.Fatalf("output %q", out.String())
+	}
+}
+
+func typeText(m *Model, text string) {
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
+}
+
+func TestQuickCommand(t *testing.T) {
+	m, f := setup(t)
+	f.execOut = []docker.LogLine{{Text: "total 0"}, {Text: "ls: oops", Stderr: true}}
+	f.execExit = 2
+	press(t, m, "j", "x")
+	if !m.prompting || !strings.Contains(screen(m), "╭─ run › shop/api ─") || !strings.Contains(screen(m), "│ $ █") {
+		t.Fatalf("prompt not shown:\n%s", screen(m))
+	}
+	typeText(m, "ls -la")
+	press(t, m, "j") // typed, not a move
+	if m.promptText != "ls -laj" {
+		t.Fatalf("prompt text %q", m.promptText)
+	}
+	typeText(m, strings.Repeat("y", 100)) // longer than the box: the end stays visible
+	s := screen(m)
+	if !strings.Contains(s, "│ $ …yyy") || !strings.Contains(s, "yyy█ │") {
+		t.Fatalf("long input should scroll:\n%s", s)
+	}
+	m.promptText = "ls -laj"
+	press(t, m, "backspace", "enter")
+	if len(f.execs) != 1 || f.execs[0] != "a1: ls -la" {
+		t.Fatalf("execs %q", f.execs)
+	}
+	s = screen(m)
+	for _, want := range []string{"run › shop/api $ ls -la", "total 0", "ls: oops", "exited with code 2", "✗ EXIT 2"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("popup missing %q:\n%s", want, s)
+		}
+	}
+	if v := m.popupViewer(); v.renderLine(1) != "ls: oops" {
+		t.Errorf("stderr in command output should not be coloured: %q", v.renderLine(1))
+	}
+	for _, l := range strings.Split(s, "\n") {
+		if w := ansi.StringWidth(l); w > 100 {
+			t.Errorf("line wider than terminal (%d): %q", w, l)
+		}
+	}
+
+	press(t, m, "q")
+	if m.popup != "" || !strings.Contains(screen(m), "✗ ls -la") {
+		t.Fatalf("closed popup should leave the status in the list:\n%s", screen(m))
+	}
+	press(t, m, "X")
+	if m.popup != "a1" {
+		t.Fatal("X should reopen the output")
+	}
+	press(t, m, "esc", "j", "x", "up") // history
+	if m.promptText != "ls -la" {
+		t.Fatalf("history gave %q", m.promptText)
+	}
+	press(t, m, "esc")
+	if m.prompting || len(f.execs) != 1 {
+		t.Fatal("esc should cancel the prompt")
+	}
+}
+
+func TestQuickCommandKeepsRunningInBackground(t *testing.T) {
+	m, f := setup(t)
+	f.execHold = make(chan struct{})
+	defer close(f.execHold)
+	press(t, m, "j", "x")
+	typeText(m, "sleep 9")
+	press(t, m, "enter")
+	if !strings.Contains(screen(m), "RUNNING") {
+		t.Fatalf("popup should show the command running:\n%s", screen(m))
+	}
+	press(t, m, "q", "j", "x") // run another command on db meanwhile
+	typeText(m, "true")
+	press(t, m, "enter", "q")
+	s := screen(m)
+	if !strings.Contains(s, "⟳ sleep 9") || !strings.Contains(s, "⟳ true") {
+		t.Fatalf("both commands should show as running:\n%s", s)
+	}
+	press(t, m, "k", "x")
+	if m.prompting || m.popup != "a1" {
+		t.Fatal("x on a container with a running command should show its popup")
+	}
+}
+
+func TestQuickCommandFinishedInBackground(t *testing.T) {
+	m, f := setup(t)
+	f.execHold = make(chan struct{})
+	press(t, m, "j", "x")
+	typeText(m, "make")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	press(t, m, "q") // close the popup before the command ends
+	close(f.execHold)
+	run(t, m, cmd)
+	s := screen(m)
+	if !strings.Contains(s, "✓ make") || !strings.Contains(s, "make in api finished") {
+		t.Fatalf("finished command should be reported:\n%s", s)
+	}
+}
+
+func TestQuickCommandOnStoppedOrProject(t *testing.T) {
+	m, f := setup(t)
+	press(t, m, "x")
+	if m.prompting || !strings.Contains(screen(m), "select a container first") {
+		t.Fatalf("x on project:\n%s", screen(m))
+	}
+	f.all = []tree.Container{{ID: "x1", Name: "shop-worker-1", Project: "shop", Service: "worker", State: "exited", Status: "Exited (1) 5 minutes ago"}}
+	press(t, m, "a", "j", "j", "j", "x")
+	if m.prompting || !strings.Contains(screen(m), "worker is not running") {
+		t.Fatalf("x on stopped container:\n%s", screen(m))
+	}
+	press(t, m, "X")
+	if !strings.Contains(screen(m), "no command has run in worker") {
+		t.Fatalf("X without output:\n%s", screen(m))
+	}
+}
+
+func TestStopQuickCommand(t *testing.T) {
+	m, f := setup(t)
+	f.execHold = make(chan struct{})
+	defer close(f.execHold)
+	f.ignoreInt = true
+	press(t, m, "j", "x")
+	typeText(m, "sleep 9")
+	press(t, m, "enter")
+	if s := screen(m); !strings.Contains(s, "^c stop") {
+		t.Fatalf("popup should offer to stop the command:\n%s", s)
+	}
+	press(t, m, "ctrl+c")
+	if s := screen(m); !strings.Contains(s, "STOPPING") || !strings.Contains(s, "^c kill") {
+		t.Fatalf("ctrl+c should interrupt and offer to kill:\n%s", s)
+	}
+	press(t, m, "ctrl+c") // ignored Ctrl+C, so kill it
+	settle(t, m)
+	s := screen(m)
+	for _, want := range []string{"■ STOPPED", "stopped (exit code 137)"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("popup missing %q:\n%s", want, s)
+		}
+	}
+	if fmt.Sprint(f.interrupts) != "[false true]" {
+		t.Fatalf("interrupts %v, want ctrl+c then kill", f.interrupts)
+	}
+	press(t, m, "q")
+	if !strings.Contains(screen(m), "■ sleep 9") {
+		t.Fatalf("list should show the command as stopped:\n%s", screen(m))
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}) // nothing running: quits
+	if cmd == nil || cmd() != tea.Quit() {
+		t.Fatal("ctrl+c without a running command should quit")
 	}
 }

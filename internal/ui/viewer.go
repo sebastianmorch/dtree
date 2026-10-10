@@ -18,6 +18,7 @@ type viewKind int
 const (
 	viewLogs viewKind = iota
 	viewInspect
+	viewExec // output of a quick command, shown in a popup
 )
 
 // viewerAction tells the root model what to do after a key press.
@@ -38,11 +39,14 @@ type viewLine struct {
 	marker bool // a status line inserted by dtree, not container output
 }
 
-// viewer is a full-screen scrollable pane for logs and inspect output.
+// viewer is a scrollable pane for logs, inspect and command output.
 // Scrolling is by logical line; wrapped lines span several screen rows.
 type viewer struct {
-	kind  viewKind
-	title string
+	kind     viewKind
+	title    string
+	cmd      string // the command, for viewExec
+	state    string // pre-rendered status badge, for viewExec
+	stopHint string // ctrl+c's action while a command runs, for viewExec
 
 	lines  []viewLine
 	offset int // index of the first visible line
@@ -64,6 +68,9 @@ type viewer struct {
 func newViewer(kind viewKind, title string, width, height int) *viewer {
 	return &viewer{kind: kind, title: title, match: -1, loading: true, width: width, height: height}
 }
+
+// streaming reports whether output arrives over time, so follow applies.
+func (v *viewer) streaming() bool { return v.kind != viewInspect }
 
 func (v *viewer) setSize(width, height int) {
 	v.width, v.height = width, height
@@ -165,7 +172,7 @@ func (v *viewer) clampOffset() {
 }
 
 func (v *viewer) scroll(n int) {
-	if n < 0 && v.kind == viewLogs {
+	if n < 0 && v.streaming() {
 		v.follow = false
 	}
 	v.offset += n
@@ -174,7 +181,7 @@ func (v *viewer) scroll(n int) {
 
 func (v *viewer) gotoBottom() {
 	v.offset = v.maxOffset()
-	if v.kind == viewLogs {
+	if v.streaming() {
 		v.follow = true
 	}
 }
@@ -228,7 +235,7 @@ func (v *viewer) update(key string) viewerAction {
 		}
 		v.clampOffset()
 	case "f":
-		if v.kind == viewLogs {
+		if v.streaming() {
 			v.follow = !v.follow
 			if v.follow {
 				v.offset = v.maxOffset()
@@ -289,7 +296,7 @@ func (v *viewer) findNext(start, dir int) {
 		idx := ((start+i*dir)%n + n) % n
 		if strings.Contains(strings.ToLower(v.lines[idx].plain), q) {
 			v.match = idx
-			if v.kind == viewLogs {
+			if v.streaming() {
 				v.follow = false
 			}
 			if idx < v.offset || idx >= v.offset+v.height {
@@ -314,7 +321,9 @@ func (v *viewer) renderLine(i int) string {
 			hl = styleCurMatch
 		}
 		return highlightMatches(l.plain, v.query, hl)
-	case l.stderr && l.text == l.plain:
+	// Commands often write progress and info to stderr, so command output
+	// is left uncoloured; the exit badge tells whether it failed.
+	case l.stderr && l.text == l.plain && v.kind != viewExec:
 		return styleRed.Render(l.text)
 	default:
 		return l.text
@@ -341,16 +350,26 @@ func highlightMatches(s, q string, hl style) string {
 }
 
 func (v *viewer) heading() string {
-	kind := "logs"
-	if v.kind == viewInspect {
-		kind = "inspect"
+	switch v.kind {
+	case viewInspect:
+		return styleAccent.Render("inspect") + styleDim.Render(" › ") + styleProject.Render(v.title)
+	case viewExec:
+		return styleAccent.Render("run") + styleDim.Render(" › ") + styleProject.Render(v.title) +
+			styleAccent.Render(" $ ") + v.cmd
+	default:
+		return styleAccent.Render("logs") + styleDim.Render(" › ") + styleProject.Render(v.title)
 	}
-	return styleAccent.Render(kind) + styleDim.Render(" › ") + styleProject.Render(v.title)
 }
 
 // badges are the mode indicators on the right of the top border.
 func (v *viewer) badges() string {
 	var badges []string
+	if v.kind == viewExec {
+		badges = append(badges, v.state)
+		if !v.follow {
+			badges = append(badges, styleDim.Render("paused"))
+		}
+	}
 	if v.kind == viewLogs {
 		if v.follow {
 			badges = append(badges, styleGreen.Render("●")+" "+styleBadge.Foreground(colorGreen).Render("FOLLOWING"))
@@ -367,8 +386,10 @@ func (v *viewer) badges() string {
 	return strings.Join(badges, styleDim.Render(" · "))
 }
 
-func (v *viewer) footer() string {
-	width := v.width + 4
+func (v *viewer) footer() string { return v.footerWidth(v.width + 4) }
+
+// footerWidth renders the hint bar for the given screen width.
+func (v *viewer) footerWidth(width int) string {
 	if v.searching {
 		return " " + styleAccent.Render("/") + v.input + styleAccent.Render("█")
 	}
@@ -381,6 +402,13 @@ func (v *viewer) footer() string {
 		hints = append(hints, [2]string{"f", "follow"}, [2]string{"t", "timestamps"})
 	case viewInspect:
 		hints = append(hints, [2]string{"r", "refresh"})
+	case viewExec:
+		// The popup can't be told apart from the list, so keep "close" in view.
+		first := [][2]string{{"q", "close"}}
+		if v.stopHint != "" {
+			first = append(first, [2]string{"^c", v.stopHint})
+		}
+		return hintBar(append(first, append(hints, [2]string{"f", "follow"})...), width)
 	}
 	return hintBar(append(hints, [2]string{"q", "back"}), width)
 }
@@ -393,8 +421,15 @@ func (v *viewer) position() string {
 }
 
 func (v *viewer) view() string {
+	return strings.Join(v.box(), "\n") + "\n" + v.footer()
+}
+
+// box renders the bordered content without the hint bar.
+func (v *viewer) box() []string {
 	rows := make([]string, 0, v.height)
 	switch {
+	case v.loading && v.kind == viewExec:
+		rows = append(rows, styleDim.Render("Starting…"))
 	case v.loading:
 		rows = append(rows, styleDim.Render("Loading…"))
 	case len(v.lines) == 0:
@@ -413,7 +448,7 @@ func (v *viewer) view() string {
 			rows = append(rows, part)
 		}
 	}
-	box := panel{
+	return panel{
 		title:       v.heading(),
 		topRight:    v.badges(),
 		bottomRight: v.position(),
@@ -421,5 +456,4 @@ func (v *viewer) view() string {
 		width:       v.width + 4,
 		height:      v.height,
 	}.render(rows)
-	return strings.Join(box, "\n") + "\n" + v.footer()
 }

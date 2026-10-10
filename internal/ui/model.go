@@ -107,6 +107,17 @@ type Model struct {
 	logCancel context.CancelFunc
 	target    tree.Container // container shown in the viewer
 
+	// Quick commands (x): the prompt, the jobs by container ID and the
+	// container whose output popup is open ("" when none).
+	prompting    bool
+	promptText   string
+	promptTarget tree.Container
+	history      []string
+	historyIdx   int
+	jobs         map[string]*job
+	jobGen       int
+	popup        string
+
 	// details caches inspect data for the info panel by container ID. A
 	// container's config never changes, so entries never go stale; nil
 	// marks a request in flight.
@@ -116,7 +127,7 @@ type Model struct {
 func New(client docker.Client, showAll bool) *Model {
 	return &Model{
 		client: client, tree: tree.New(), showAll: showAll, width: 80, height: 24,
-		details: map[string]*containerDetails{},
+		details: map[string]*containerDetails{}, jobs: map[string]*job{},
 	}
 }
 
@@ -130,6 +141,7 @@ func (m *Model) Close() {
 		m.eventsCancel()
 	}
 	m.stopLogs()
+	m.stopJobs()
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -146,6 +158,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		if m.viewer != nil {
 			m.viewer.setSize(m.viewerWidth(), m.viewerHeight())
+		}
+		if m.popup != "" {
+			m.openPopup(m.popup)
 		}
 		return m, nil
 
@@ -164,6 +179,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loaded, m.listErr, m.connected = true, nil, true
 		m.tree.Set(msg.containers)
 		m.pruneDetails(msg.containers)
+		m.pruneJobs(msg.containers)
 		return m, nil
 
 	case detailsMsg:
@@ -238,6 +254,15 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewer.setContent(msg.lines)
 		return m, nil
 
+	case execStartMsg:
+		return m, m.execStarted(msg)
+
+	case execBatchMsg:
+		return m, m.execBatch(msg)
+
+	case stopFailedMsg:
+		return m, m.stopFailed(msg)
+
 	case execDoneMsg:
 		return m, tea.Batch(m.execResult(msg), m.list())
 	}
@@ -266,6 +291,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return m.fetchInspect(m.target.ID)
 		}
 		return nil
+	}
+	if m.popup != "" {
+		return m.handlePopupKey(msg)
+	}
+	if m.prompting {
+		return m.handlePromptKey(msg)
 	}
 	if m.filtering {
 		return m.handleFilterKey(msg)
@@ -313,6 +344,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		default:
 			return m.shell(*c)
 		}
+	case "x":
+		return m.startPrompt()
+	case "X":
+		return m.showLastOutput()
 	case "a":
 		m.showAll = !m.showAll
 		return m.list()
@@ -489,28 +524,34 @@ func (m *Model) startLogs() tea.Cmd {
 	}
 }
 
-// readLogs blocks for one line, then drains whatever else is buffered so a
-// chatty container renders in batches instead of once per line.
 func readLogs(gen int, ch <-chan docker.LogLine) tea.Cmd {
 	return func() tea.Msg {
-		l, ok := <-ch
-		if !ok {
-			return logBatchMsg{gen: gen, done: true}
-		}
-		batch := []docker.LogLine{l}
-		for len(batch) < 1000 {
-			select {
-			case l, ok := <-ch:
-				if !ok {
-					return logBatchMsg{gen: gen, lines: batch, done: true}
-				}
-				batch = append(batch, l)
-			default:
-				return logBatchMsg{gen: gen, ch: ch, lines: batch}
-			}
-		}
-		return logBatchMsg{gen: gen, ch: ch, lines: batch}
+		lines, done := readBatch(ch)
+		return logBatchMsg{gen: gen, ch: ch, lines: lines, done: done}
 	}
+}
+
+// readBatch blocks for one line, then drains whatever else is buffered so
+// chatty output renders in batches instead of once per line. done reports
+// that the channel is closed.
+func readBatch(ch <-chan docker.LogLine) (batch []docker.LogLine, done bool) {
+	l, ok := <-ch
+	if !ok {
+		return nil, true
+	}
+	batch = []docker.LogLine{l}
+	for len(batch) < 1000 {
+		select {
+		case l, ok := <-ch:
+			if !ok {
+				return batch, true
+			}
+			batch = append(batch, l)
+		default:
+			return batch, false
+		}
+	}
+	return batch, false
 }
 
 func (m *Model) openInspect(c tree.Container) tea.Cmd {
@@ -539,7 +580,7 @@ func (m *Model) fetchInspect(id string) tea.Cmd {
 // panel unless it is cached or already being fetched.
 func (m *Model) loadDetails() tea.Cmd {
 	c := m.tree.SelectedContainer()
-	if c == nil || m.mode != modeTree {
+	if c == nil || m.mode != modeTree || m.popup != "" {
 		return nil
 	}
 	if _, ok := m.details[c.ID]; ok {
