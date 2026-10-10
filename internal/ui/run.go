@@ -36,6 +36,37 @@ type job struct {
 	// ctrl+c presses: the first interrupts it, later ones kill it.
 	interrupt func(force bool) error
 	stops     int
+
+	// typing is the popup's input mode, where keys go to the command. input
+	// queues them for a goroutine that writes them in order once the
+	// command has started; it is closed when the command ends.
+	typing bool
+	input  chan []byte
+}
+
+const inputQueue = 256 // keys and pastes waiting to be written
+
+// send queues keys for the command. When the command doesn't read them
+// and the queue is full, they are dropped rather than blocking the UI.
+func (j *job) send(p []byte) {
+	if !j.running || len(p) == 0 {
+		return
+	}
+	select {
+	case j.input <- p:
+	default:
+	}
+}
+
+// writeInput writes queued keys until the queue is closed. After a failed
+// write the rest are discarded.
+func writeInput(queue <-chan []byte, write func([]byte) error) {
+	var err error
+	for p := range queue {
+		if err == nil {
+			err = write(p)
+		}
+	}
 }
 
 // write feeds command output to the terminal and shows the result.
@@ -57,6 +88,12 @@ func (j *job) stopped() bool { return !j.running && j.stops > 0 && j.failed() }
 
 // sync shows the job's state in its viewer.
 func (j *job) sync() {
+	j.typing = j.typing && j.running
+	j.viewer.typing = j.typing
+	if j.term.showCursor != j.typing {
+		j.term.showCursor = j.typing
+		j.viewer.replaceTail(j.term.flush())
+	}
 	j.viewer.state = j.badge()
 	j.viewer.stopHint = ""
 	if j.running {
@@ -206,7 +243,10 @@ func (m *Model) runJob(c tree.Container, cmd string) tea.Cmd {
 	width, height := m.popupWidth()-4, m.popupHeight()-2
 	v := newViewer(viewExec, title, width, height)
 	v.cmd, v.follow = cmd, true
-	j := &job{gen: gen, name: c.DisplayName(), cmd: cmd, running: true, viewer: v, term: newTerm(width, height), cancel: cancel}
+	j := &job{
+		gen: gen, name: c.DisplayName(), cmd: cmd, running: true, viewer: v, term: newTerm(width, height),
+		cancel: cancel, input: make(chan []byte, inputQueue),
+	}
 	j.sync()
 	m.jobs[c.ID] = j
 	m.openPopup(c.ID)
@@ -237,6 +277,7 @@ func (m *Model) execStarted(msg execStartMsg) tea.Cmd {
 	}
 	j.viewer.loading = false
 	j.interrupt = msg.session.Interrupt
+	go writeInput(j.input, msg.session.Input)
 	read := readExec(msg.id, msg.gen, msg.session.Output, msg.session.Result)
 	if j.stops > 0 { // ctrl+c was pressed while it was starting
 		return tea.Batch(read, m.sendStop(msg.id, j, j.stops > 1))
@@ -294,6 +335,7 @@ func (m *Model) execBatch(msg execBatchMsg) tea.Cmd {
 func (m *Model) finishJob(id string, j *job, r docker.ExecResult) tea.Cmd {
 	j.running, j.exit, j.err = false, r.ExitCode, r.Err
 	j.cancel()
+	close(j.input)
 	j.sync()
 	switch {
 	case r.Err != nil:
@@ -358,13 +400,37 @@ func (m *Model) popupViewer() *viewer {
 	return nil
 }
 
-// handlePopupKey passes keys to the output viewer. ctrl+c stops a running
-// command instead of quitting.
+// handlePopupKey handles keys in the output popup. In navigation mode they
+// scroll and search, i switches to input mode and ctrl+c stops a running
+// command instead of quitting. In input mode every key goes to the command
+// except esc, which switches back, and ctrl+c.
 func (m *Model) handlePopupKey(msg tea.KeyMsg) tea.Cmd {
-	if j := m.jobs[m.popup]; j.running && msg.String() == "ctrl+c" && !j.viewer.searching {
-		return m.stopJob(m.popup, j)
+	j := m.jobs[m.popup]
+	key := msg.String()
+	if j.typing {
+		switch key {
+		case "esc":
+			j.typing = false
+			j.sync()
+		case "ctrl+c":
+			return m.stopJob(m.popup, j)
+		default:
+			j.send(keyBytes(msg))
+		}
+		return nil
 	}
-	switch m.popupViewer().updateKey(msg) {
+	if j.running && !j.viewer.searching {
+		switch key {
+		case "ctrl+c":
+			return m.stopJob(m.popup, j)
+		case "i":
+			j.typing = true
+			j.viewer.gotoBottom()
+			j.sync()
+			return nil
+		}
+	}
+	switch j.viewer.updateKey(msg) {
 	case actQuit:
 		return m.quit()
 	case actClose:
@@ -480,4 +546,34 @@ func readChunks(ch <-chan []byte) (data []byte, done bool) {
 		}
 	}
 	return data, false
+}
+
+// keyBytes is what a terminal sends for a key press.
+func keyBytes(msg tea.KeyMsg) []byte {
+	var b []byte
+	switch {
+	case msg.Type == tea.KeyRunes:
+		b = []byte(string(msg.Runes))
+	case msg.Type == tea.KeySpace:
+		b = []byte(" ")
+	case msg.Type >= 0 && msg.Type < 0x20 || msg.Type == 0x7f:
+		b = []byte{byte(msg.Type)} // control keys, enter, tab and backspace
+	default:
+		seq, ok := keySequences[msg.Type]
+		if !ok {
+			return nil
+		}
+		b = []byte(seq)
+	}
+	if msg.Alt && !msg.Paste {
+		b = append([]byte{0x1b}, b...)
+	}
+	return b
+}
+
+var keySequences = map[tea.KeyType]string{
+	tea.KeyUp: "\x1b[A", tea.KeyDown: "\x1b[B", tea.KeyRight: "\x1b[C", tea.KeyLeft: "\x1b[D",
+	tea.KeyHome: "\x1b[H", tea.KeyEnd: "\x1b[F", tea.KeyPgUp: "\x1b[5~", tea.KeyPgDown: "\x1b[6~",
+	tea.KeyDelete: "\x1b[3~", tea.KeyInsert: "\x1b[2~", tea.KeyShiftTab: "\x1b[Z",
+	tea.KeyF1: "\x1bOP", tea.KeyF2: "\x1bOQ", tea.KeyF3: "\x1bOR", tea.KeyF4: "\x1bOS",
 }

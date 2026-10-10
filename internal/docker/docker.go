@@ -65,6 +65,8 @@ type ExecSession struct {
 	// value.
 	Output <-chan []byte
 	Result <-chan ExecResult
+	// Input types p into the command's terminal. Calls must not overlap.
+	Input func(p []byte) error
 	// Interrupt types Ctrl+C into the command's terminal, which signals the
 	// command and everything it started. With force it kills them instead,
 	// for commands that ignore Ctrl+C.
@@ -423,7 +425,11 @@ func (s *SDK) Exec(ctx context.Context, id string, opts ExecOptions) (*ExecSessi
 		}
 		return s.kill(id, pid)
 	}
-	return &ExecSession{Output: output, Result: result, Interrupt: interrupt}, nil
+	input := func(p []byte) error {
+		_, err := resp.Conn.Write(p)
+		return err
+	}
+	return &ExecSession{Output: output, Result: result, Input: input, Interrupt: interrupt}, nil
 }
 
 // kill sends SIGKILL to a process group in the container through a second

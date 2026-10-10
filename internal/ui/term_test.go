@@ -106,3 +106,25 @@ func TestTermMarkersAndScrollback(t *testing.T) {
 		t.Fatalf("viewer and term out of step after trimming: %q", v.lines[len(v.lines)-1].plain)
 	}
 }
+
+func TestTermCursor(t *testing.T) {
+	tm := newTerm(10, 5)
+	v := newViewer(viewExec, "t", 10, 5)
+	sync := func() { v.replaceTail(tm.flush()) }
+	_, _ = tm.Write([]byte("Name? "))
+	tm.showCursor = true
+	sync()
+	if got := v.lines[0].text; got != "Name? \x1b[7m \x1b[27m" {
+		t.Fatalf("cursor after prompt: %q", got)
+	}
+	_, _ = tm.Write([]byte("ab\r\n"))
+	sync()
+	if len(v.lines) != 2 || v.lines[0].text != "Name? ab" || v.lines[1].text != "\x1b[7m \x1b[27m" {
+		t.Fatalf("cursor on the next, still empty row: %+v", v.lines)
+	}
+	tm.showCursor = false
+	sync()
+	if len(v.lines) != 1 || v.lines[0].text != "Name? ab" {
+		t.Fatalf("hidden cursor should leave no trace: %+v", v.lines)
+	}
+}

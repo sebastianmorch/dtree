@@ -47,6 +47,7 @@ type viewer struct {
 	cmd      string // the command, for viewExec
 	state    string // pre-rendered status badge, for viewExec
 	stopHint string // ctrl+c's action while a command runs, for viewExec
+	typing   bool   // keys go to the command, for viewExec
 
 	lines  []viewLine
 	offset int // index of the first visible line
@@ -382,10 +383,21 @@ func (v *viewer) heading() string {
 	}
 }
 
+// border is green while keys go to the command, so the mode is obvious.
+func (v *viewer) border() style {
+	if v.typing {
+		return styleGreen
+	}
+	return styleFocus
+}
+
 // badges are the mode indicators on the right of the top border.
 func (v *viewer) badges() string {
 	var badges []string
 	if v.kind == viewExec {
+		if v.typing {
+			badges = append(badges, styleGreen.Render("⌨")+" "+styleBadge.Foreground(colorGreen).Render("INPUT"))
+		}
 		badges = append(badges, v.state)
 		if !v.follow {
 			badges = append(badges, styleDim.Render("paused"))
@@ -425,9 +437,14 @@ func (v *viewer) footerWidth(width int) string {
 		hints = append(hints, [2]string{"r", "refresh"})
 	case viewExec:
 		// The popup can't be told apart from the list, so keep "close" in view.
+		if v.typing {
+			label := " " + styleGreen.Render("⌨ keys go to the command") + "  "
+			return ansi.Truncate(label+hintBar([][2]string{{"esc", "scroll mode"}, {"^c", v.stopHint}},
+				max(0, width-ansi.StringWidth(label))), width, "…")
+		}
 		first := [][2]string{{"q", "close"}}
 		if v.stopHint != "" {
-			first = append(first, [2]string{"^c", v.stopHint})
+			first = append(first, [2]string{"^c", v.stopHint}, [2]string{"i", "input"})
 		}
 		return hintBar(append(first, append(hints, [2]string{"f", "follow"})...), width)
 	}
@@ -473,7 +490,7 @@ func (v *viewer) box() []string {
 		title:       v.heading(),
 		topRight:    v.badges(),
 		bottomRight: v.position(),
-		border:      styleFocus,
+		border:      v.border(),
 		width:       v.width + 4,
 		height:      v.height,
 	}.render(rows)

@@ -592,6 +592,7 @@ var helpSections = []struct {
 		{"w", "toggle line wrap"},
 		{"q / esc", "back · close popup"},
 		{"ctrl+c", "stop command (popup), again to kill"},
+		{"i", "type into the command (popup), esc back"},
 	}},
 }
 

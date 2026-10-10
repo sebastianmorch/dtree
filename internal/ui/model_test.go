@@ -33,6 +33,23 @@ type fakeClient struct {
 
 	mu         sync.Mutex
 	interrupts []bool // force flag of each Interrupt call
+	input      []byte // everything typed into commands
+}
+
+// typed waits briefly for input to reach the fake, then returns it.
+func (f *fakeClient) typed(want int) string {
+	for range 20 {
+		f.mu.Lock()
+		got := string(f.input)
+		f.mu.Unlock()
+		if len(got) >= want {
+			return got
+		}
+		<-timeAfter()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return string(f.input)
 }
 
 func newFake() *fakeClient {
@@ -105,7 +122,13 @@ func (f *fakeClient) Exec(_ context.Context, id string, opts docker.ExecOptions)
 		}
 		return nil
 	}
-	return &docker.ExecSession{Output: lines, Result: result, Interrupt: interrupt}, nil
+	input := func(p []byte) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.input = append(f.input, p...)
+		return nil
+	}
+	return &docker.ExecSession{Output: lines, Input: input, Result: result, Interrupt: interrupt}, nil
 }
 
 // run executes cmd and feeds resulting messages back into the model until
@@ -831,5 +854,79 @@ func TestStopQuickCommand(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}) // nothing running: quits
 	if cmd == nil || cmd() != tea.Quit() {
 		t.Fatal("ctrl+c without a running command should quit")
+	}
+}
+
+func TestInputMode(t *testing.T) {
+	m, f := setup(t)
+	f.execHold = make(chan struct{})
+	f.execOut = "Continue? [Y/n] "
+	press(t, m, "j", "x")
+	typeText(m, "apt install vim")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	run(t, m, cmd)
+	if s := screen(m); !strings.Contains(s, "i input") || strings.Contains(s, "INPUT") {
+		t.Fatalf("navigation mode should offer input mode:\n%s", s)
+	}
+	press(t, m, "j") // navigation: scrolls, not sent
+	press(t, m, "i")
+	s := screen(m)
+	for _, want := range []string{"⌨ INPUT", "keys go to the command", "esc scroll mode", "Continue? [Y/n]"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("input mode missing %q:\n%s", want, s)
+		}
+	}
+	if !strings.Contains(m.View(), "Continue? [Y/n] \x1b[7m \x1b[27m") {
+		t.Errorf("cursor should be drawn after the prompt:\n%q", m.View())
+	}
+	press(t, m, "y", "enter", "q", "up", "backspace")
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("pasted text"), Paste: true})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b"), Alt: true})
+	want := "y\rq\x1b[A\x7f\x04pasted text\x1bb"
+	if got := f.typed(len(want)); got != want {
+		t.Fatalf("typed %q, want %q", got, want)
+	}
+	if m.popup == "" {
+		t.Fatal("q in input mode must go to the command, not close the popup")
+	}
+
+	press(t, m, "esc")
+	if s := screen(m); strings.Contains(s, "INPUT") || strings.Contains(m.View(), "\x1b[7m \x1b[27m") {
+		t.Fatalf("esc should return to navigation and hide the cursor:\n%s", s)
+	}
+	press(t, m, "k")
+	if got := f.typed(len(want) + 1); got != want {
+		t.Fatalf("navigation keys must not be sent, typed %q", got)
+	}
+
+	press(t, m, "i")
+	close(f.execHold) // the command ends while typing
+	settle(t, m)
+	if m.jobs["a1"].typing || strings.Contains(screen(m), "INPUT") {
+		t.Fatalf("input mode should end with the command:\n%s", screen(m))
+	}
+	press(t, m, "i", "q") // nothing to type into: i does nothing, q closes
+	if m.popup != "" {
+		t.Fatal("q should close the popup of a finished command")
+	}
+}
+
+func TestKeyBytes(t *testing.T) {
+	for _, tc := range []struct {
+		msg  tea.KeyMsg
+		want string
+	}{
+		{tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("æ")}, "æ"},
+		{tea.KeyMsg{Type: tea.KeySpace}, " "},
+		{tea.KeyMsg{Type: tea.KeyTab}, "\t"},
+		{tea.KeyMsg{Type: tea.KeyCtrlA}, "\x01"},
+		{tea.KeyMsg{Type: tea.KeyLeft, Alt: true}, "\x1b\x1b[D"},
+		{tea.KeyMsg{Type: tea.KeyDelete}, "\x1b[3~"},
+		{tea.KeyMsg{Type: tea.KeyF12}, ""},
+	} {
+		if got := string(keyBytes(tc.msg)); got != tc.want {
+			t.Errorf("%v: got %q, want %q", tc.msg, got, tc.want)
+		}
 	}
 }

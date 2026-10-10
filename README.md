@@ -17,9 +17,11 @@ open a shell, all with vim keys or the arrow keys.
   the container's row shows whether it is still running (⟳), succeeded (✓),
   failed (✗) or was stopped (■), and `X` brings the output back. `ctrl+c` in
   the popup stops a running command; press it again to kill a command that
-  ignores it. Commands run with `sh -c` in a terminal but can't read your
-  keyboard, so a command that asks for input waits until you stop it. Use `s`
-  for interactive programs. Quitting dtree stops commands that are still running.
+  ignores it. When a command asks for input, press `i` to switch the popup to
+  input mode: every key goes to the command until `esc` switches back to
+  scrolling. Commands run with `sh -c` in a terminal, but the popup only shows
+  their output line by line, so full-screen programs (`vim`, `top`) need `s`.
+  Quitting dtree stops commands that are still running.
 
 ## Install
 
@@ -86,6 +88,7 @@ Press `?` inside dtree for this list.
 | `w` | toggle line wrap |
 | `q` / `esc` | back · close popup |
 | `ctrl+c` | stop the running command (popup); again to kill it |
+| `i` | type into the running command (popup); `esc` goes back to scrolling |
 
 ## Development
 

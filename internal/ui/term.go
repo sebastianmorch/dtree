@@ -29,6 +29,11 @@ type term struct {
 	// Changes since the last flush: rows dropped from the top by the
 	// scrollback limit, and the first row that changed.
 	dropped, dirty int
+
+	// showCursor draws the cursor, while the user types into the command.
+	// drawn is where the last flush drew it, row -1 for nowhere.
+	showCursor bool
+	drawn      [2]int
 }
 
 type termRow struct {
@@ -42,7 +47,7 @@ type termCell struct {
 }
 
 func newTerm(width, height int) *term {
-	return &term{width: max(1, width), height: max(1, height), parser: ansi.NewParser()}
+	return &term{width: max(1, width), height: max(1, height), parser: ansi.NewParser(), drawn: [2]int{-1, 0}}
 }
 
 // Write feeds output to the terminal. It never fails.
@@ -262,6 +267,7 @@ func (t *term) trim() {
 	t.row = max(0, t.row-drop)
 	t.screenTop = max(0, t.screenTop-drop)
 	t.dirty = max(0, t.dirty-drop)
+	t.drawn[0] -= drop
 	t.dropped += drop
 }
 
@@ -283,23 +289,48 @@ func (t *term) marker(text string) {
 
 // flush returns the changes since the last flush: how many lines were
 // dropped from the top, and the lines from index from on, which replace
-// what the viewer had there.
+// what the viewer had there. A cursor below the last row is drawn on an
+// extra line that the next flush replaces.
 func (t *term) flush() (dropped, from int, lines []viewLine) {
-	dropped, from = t.dropped, min(t.dirty, len(t.rows))
-	for _, r := range t.rows[from:] {
-		lines = append(lines, r.render())
+	cursor := [2]int{-1, 0}
+	if t.showCursor {
+		cursor = [2]int{t.row, min(t.col, t.width-1)}
 	}
-	t.dropped, t.dirty = 0, len(t.rows)
+	if cursor != t.drawn {
+		for _, r := range []int{t.drawn[0], cursor[0]} {
+			if r >= 0 {
+				t.markDirty(r)
+			}
+		}
+	}
+	dropped, from = t.dropped, min(t.dirty, len(t.rows))
+	for i := from; i < len(t.rows) || i == cursor[0]; i++ {
+		var r termRow
+		if i < len(t.rows) {
+			r = t.rows[i]
+		}
+		col := -1
+		if i == cursor[0] {
+			col = cursor[1]
+		}
+		lines = append(lines, r.render(col))
+	}
+	t.dropped, t.dirty, t.drawn = 0, len(t.rows), cursor
 	return dropped, from, lines
 }
 
-func (r termRow) render() viewLine {
+// render draws the row, with the cursor at column cursor unless it is -1.
+func (r termRow) render(cursor int) viewLine {
 	if r.marker != "" {
 		return viewLine{text: r.marker, plain: r.marker, marker: true}
 	}
+	cells := r.cells
+	for len(cells) <= cursor {
+		cells = append(cells[:len(cells):len(cells)], termCell{text: " "})
+	}
 	var text, plain strings.Builder
 	sgr := ""
-	for _, c := range r.cells {
+	for i, c := range cells {
 		if c.sgr != sgr {
 			if sgr != "" {
 				text.WriteString("\x1b[0m")
@@ -307,7 +338,11 @@ func (r termRow) render() viewLine {
 			text.WriteString(c.sgr)
 			sgr = c.sgr
 		}
-		text.WriteString(c.text)
+		if i == cursor {
+			text.WriteString("\x1b[7m" + c.text + "\x1b[27m") // reverse video
+		} else {
+			text.WriteString(c.text)
+		}
 		plain.WriteString(c.text)
 	}
 	if sgr != "" {
