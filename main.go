@@ -33,8 +33,11 @@ func buildVersion() string {
 
 func main() {
 	var all, showVersion bool
+	var filter string
 	flag.BoolVar(&all, "a", false, "show all containers, not only running ones")
 	flag.BoolVar(&all, "all", false, "show all containers, not only running ones")
+	flag.StringVar(&filter, "f", "", "start with the tree filtered by container or project name")
+	flag.StringVar(&filter, "filter", "", "start with the tree filtered by container or project name")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
 
@@ -51,6 +54,7 @@ func main() {
 	defer client.Close()
 
 	m := ui.New(client, all)
+	m.SetFilter(filter)
 	defer m.Close()
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "dtree: %v\n", err)

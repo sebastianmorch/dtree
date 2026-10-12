@@ -131,6 +131,9 @@ func New(client docker.Client, showAll bool) *Model {
 	}
 }
 
+// SetFilter sets the tree filter, as if it had been typed after /.
+func (m *Model) SetFilter(q string) { m.tree.SetFilter(q) }
+
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.list(), m.subscribe())
 }
@@ -176,8 +179,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.connected = false
 			return m, nil
 		}
+		first := !m.loaded
 		m.loaded, m.listErr, m.connected = true, nil, true
 		m.tree.Set(msg.containers)
+		if first && m.tree.Filter() != "" {
+			m.tree.FirstContainer() // start on the first match of a filter from the command line
+		}
 		m.pruneDetails(msg.containers)
 		m.pruneJobs(msg.containers)
 		return m, nil

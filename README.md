@@ -43,7 +43,15 @@ export PATH="$HOME/go/bin:$PATH"
 ```sh
 dtree          # running containers
 dtree -a       # all containers, including stopped ones
+dtree -f shop  # start filtered to containers or projects matching "shop"
 dtree --version
+```
+
+The filter from `-f` / `--filter` works like typing it after `/`: press `esc`
+to clear it. This makes it easy to keep an alias for a filter you use often:
+
+```sh
+alias dshop='dtree -a -f shop'
 ```
 
 dtree connects to the daemon in `DOCKER_HOST` or, if that is unset, the

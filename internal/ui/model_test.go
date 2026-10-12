@@ -930,3 +930,24 @@ func TestKeyBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestFilterFromCommandLine(t *testing.T) {
+	late = nil
+	f := newFake()
+	m := New(f, false)
+	m.SetFilter("db")
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	run(t, m, m.Init())
+
+	s := screen(m)
+	if m.filtering || !strings.Contains(s, "filter: db") || strings.Contains(s, "buildkit") {
+		t.Fatalf("filter from the command line not applied:\n%s", s)
+	}
+	if c := m.tree.SelectedContainer(); c == nil || c.ID != "a2" {
+		t.Fatalf("cursor should start on the first match, got %+v", c)
+	}
+	press(t, m, "esc")
+	if m.tree.Filter() != "" || !strings.Contains(screen(m), "buildkit") {
+		t.Fatal("esc should clear a filter from the command line")
+	}
+}
