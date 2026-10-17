@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	flag "github.com/spf13/pflag"
 
 	"github.com/sebastianmorch/dtree/internal/config"
@@ -71,6 +72,10 @@ func main() {
 	m.SetFilter(filter)
 	m.SetCommands(commands)
 	defer m.Close()
+	// Ask the terminal for its background color now: once the program runs
+	// it reads stdin and swallows the reply, and lipgloss falls back to
+	// COLORFGBG, which is often stale or missing, and then to dark.
+	lipgloss.HasDarkBackground()
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "dtree: %v\n", err)
 		os.Exit(1)
