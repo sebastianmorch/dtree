@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	flag "github.com/spf13/pflag"
 
+	"github.com/sebastianmorch/dtree/internal/config"
 	"github.com/sebastianmorch/dtree/internal/docker"
 	"github.com/sebastianmorch/dtree/internal/ui"
 )
@@ -53,6 +54,12 @@ func main() {
 		return
 	}
 
+	commands, err := loadCommands()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dtree: reading saved commands: %v\n", err)
+		os.Exit(1)
+	}
+
 	client, err := docker.New(context.Background())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dtree: %v\nIs Docker running?\n", err)
@@ -62,9 +69,20 @@ func main() {
 
 	m := ui.New(client, all)
 	m.SetFilter(filter)
+	m.SetCommands(commands)
 	defer m.Close()
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "dtree: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// loadCommands reads the saved quick commands. Without a home directory they
+// are kept for this session only.
+func loadCommands() (*config.Commands, error) {
+	path, err := config.DefaultPath()
+	if err != nil {
+		path = ""
+	}
+	return config.LoadCommands(path)
 }

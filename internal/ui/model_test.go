@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/sebastianmorch/dtree/internal/config"
 	"github.com/sebastianmorch/dtree/internal/docker"
 	"github.com/sebastianmorch/dtree/internal/tree"
 )
@@ -215,6 +217,10 @@ func press(t *testing.T, m *Model, keys ...string) {
 			msg = tea.KeyMsg{Type: tea.KeyRight}
 		case "ctrl+c":
 			msg = tea.KeyMsg{Type: tea.KeyCtrlC}
+		case "ctrl+s":
+			msg = tea.KeyMsg{Type: tea.KeyCtrlS}
+		case "tab":
+			msg = tea.KeyMsg{Type: tea.KeyTab}
 		default:
 			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 		}
@@ -755,13 +761,87 @@ func TestQuickCommand(t *testing.T) {
 	if m.popup != "a1" {
 		t.Fatal("X should reopen the output")
 	}
-	press(t, m, "esc", "j", "x", "up") // history
+	press(t, m, "esc", "j", "x", "down") // the last command is the first suggestion
 	if m.promptText != "ls -la" {
 		t.Fatalf("history gave %q", m.promptText)
 	}
 	press(t, m, "esc")
 	if m.prompting || len(f.execs) != 1 {
 		t.Fatal("esc should cancel the prompt")
+	}
+}
+
+func TestPromptSuggestions(t *testing.T) {
+	m, f := setup(t)
+	path := filepath.Join(t.TempDir(), "commands.yaml")
+	if err := os.WriteFile(path, []byte("global:\n  - df -h\n  - ps aux\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmds, err := config.LoadCommands(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetCommands(cmds)
+	m.history = []string{"ls", "ps aux"}
+
+	press(t, m, "j", "x")
+	s := screen(m)
+	// Recent commands first, then saved ones not run yet; saved ones are starred.
+	iPs, iLs, iDf := strings.Index(s, "★ ps aux"), strings.Index(s, "  ls "), strings.Index(s, "★ df -h")
+	if iPs < 0 || iLs < 0 || iDf < 0 || !(iPs < iLs && iLs < iDf) {
+		t.Fatalf("suggestions not shown in order:\n%s", s)
+	}
+
+	typeText(m, "D")
+	s = screen(m)
+	if !strings.Contains(s, "★ df -h") || strings.Contains(s, "ps aux") {
+		t.Fatalf("typing should filter (case-insensitively):\n%s", s)
+	}
+	press(t, m, "tab")
+	if m.promptText != "df -h" {
+		t.Fatalf("tab completed %q", m.promptText)
+	}
+
+	press(t, m, "ctrl+u", "down", "down")
+	if m.promptText != "ls" {
+		t.Fatalf("down down picked %q", m.promptText)
+	}
+	press(t, m, "up", "up")
+	if m.promptText != "" || m.suggestIdx != -1 {
+		t.Fatalf("up past the first suggestion should restore the input, got %q", m.promptText)
+	}
+
+	press(t, m, "down", "down", "ctrl+s")
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "- ls") {
+		t.Fatalf("ctrl+s should save:\n%s", data)
+	}
+	if s := screen(m); !strings.Contains(s, "★ ls ") || !strings.Contains(s, "★ saved") {
+		t.Fatalf("saved command should be starred:\n%s", s)
+	}
+	press(t, m, "down", "ctrl+s") // forget df -h, which never ran
+	if cmds.Saved("df -h") || m.suggestIdx != -1 || m.promptText != "df -h" {
+		t.Fatalf("forget: saved=%v idx=%d text=%q", cmds.Saved("df -h"), m.suggestIdx, m.promptText)
+	}
+	press(t, m, "enter")
+	if len(f.execs) != 1 || f.execs[0] != "a1: df -h" {
+		t.Fatalf("execs %q", f.execs)
+	}
+}
+
+func TestPromptSaveError(t *testing.T) {
+	m, _ := setup(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "commands.yaml")
+	cmds, _ := config.LoadCommands(path)
+	m.SetCommands(cmds)
+	if err := os.WriteFile(path, []byte("global: [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	press(t, m, "j", "x")
+	typeText(m, "df -h")
+	press(t, m, "ctrl+s")
+	if !strings.Contains(screen(m), "could not save") || cmds.Saved("df -h") {
+		t.Fatalf("save error not shown:\n%s", screen(m))
 	}
 }
 

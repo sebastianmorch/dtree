@@ -22,6 +22,22 @@ open a shell, all with vim keys or the arrow keys.
   scrolling. Commands run with `sh -c` in a terminal, but the popup only shows
   their output line by line, so full-screen programs (`vim`, `top`) need `s`.
   Quitting dtree stops commands that are still running.
+- The command prompt suggests commands as you type: the ones run this session
+  (most recent first) and your saved commands (★). Pick one with `↑`/`↓`,
+  or press `tab` to complete it and edit it first. `ctrl+s` saves the command
+  in the prompt, or forgets it if it is already saved.
+
+## Saved commands
+
+Saved commands are kept in `~/.config/dtree/commands.yaml` (or
+`$XDG_CONFIG_HOME/dtree/commands.yaml`) and are suggested in every container.
+You can also edit the file by hand:
+
+```yaml
+global:
+  - df -h
+  - ps aux
+```
 
 ## Install
 
@@ -76,7 +92,7 @@ Press `?` inside dtree for this list.
 | `L` | logs |
 | `i` | inspect |
 | `s` | shell (bash, falls back to sh) |
-| `x` | run a command (output in a popup; `↑`/`↓` for history) |
+| `x` | run a command (output in a popup; `↑`/`↓` for recent and saved commands) |
 | `X` | show the last command's output |
 | `a` | toggle running / all containers |
 | `r` | refresh |
@@ -97,6 +113,16 @@ Press `?` inside dtree for this list.
 | `q` / `esc` | back · close popup |
 | `ctrl+c` | stop the running command (popup); again to kill it |
 | `i` | type into the running command (popup); `esc` goes back to scrolling |
+
+### Command prompt
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` | pick a recent or saved (★) command |
+| `tab` | complete the highlighted (or first) suggestion to edit it |
+| `ctrl+s` | save the command · forget a saved one |
+| `ctrl+u` | clear |
+| `enter` / `esc` | run / cancel |
 
 ## Development
 

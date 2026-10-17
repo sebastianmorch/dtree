@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/sebastianmorch/dtree/internal/config"
 	"github.com/sebastianmorch/dtree/internal/docker"
 	"github.com/sebastianmorch/dtree/internal/tree"
 )
@@ -107,16 +108,20 @@ type Model struct {
 	logCancel context.CancelFunc
 	target    tree.Container // container shown in the viewer
 
-	// Quick commands (x): the prompt, the jobs by container ID and the
-	// container whose output popup is open ("" when none).
-	prompting    bool
-	promptText   string
-	promptTarget tree.Container
-	history      []string
-	historyIdx   int
-	jobs         map[string]*job
-	jobGen       int
-	popup        string
+	// Quick commands (x): the prompt, its suggestions, the jobs by container
+	// ID and the container whose output popup is open ("" when none).
+	prompting     bool
+	promptText    string
+	promptQuery   string // what was typed; suggestions are filtered by it
+	promptTarget  tree.Container
+	promptNote    string // shown on the prompt's border after ctrl+s
+	promptNoteErr bool
+	suggestIdx    int // highlighted suggestion, -1 for none
+	history       []string
+	commands      *config.Commands
+	jobs          map[string]*job
+	jobGen        int
+	popup         string
 
 	// details caches inspect data for the info panel by container ID. A
 	// container's config never changes, so entries never go stale; nil
@@ -127,9 +132,12 @@ type Model struct {
 func New(client docker.Client, showAll bool) *Model {
 	return &Model{
 		client: client, tree: tree.New(), showAll: showAll, width: 80, height: 24,
-		details: map[string]*containerDetails{}, jobs: map[string]*job{},
+		details: map[string]*containerDetails{}, jobs: map[string]*job{}, commands: &config.Commands{},
 	}
 }
+
+// SetCommands sets the saved quick commands suggested in the prompt.
+func (m *Model) SetCommands(c *config.Commands) { m.commands = c }
 
 // SetFilter sets the tree filter, as if it had been typed after /.
 func (m *Model) SetFilter(q string) { m.tree.SetFilter(q) }

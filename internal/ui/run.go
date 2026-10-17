@@ -3,9 +3,11 @@ package ui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/sebastianmorch/dtree/internal/docker"
@@ -14,6 +16,7 @@ import (
 
 const (
 	maxHistory     = 50
+	maxSuggestions = 8  // rows of suggestions below the prompt
 	maxBadgeCmd    = 24 // cells of the command shown next to a container row
 	minPopupWidth  = 60 // below this the popup takes the full width
 	minPopupHeight = 16 // below this the popup takes the full height
@@ -174,11 +177,13 @@ func (m *Model) startPrompt() tea.Cmd {
 		return m.setStatus(c.DisplayName()+" is not running", true)
 	}
 	m.prompting, m.promptTarget = true, *c
-	m.promptText, m.historyIdx = "", len(m.history)
+	m.setPromptText("")
 	return nil
 }
 
-// handlePromptKey edits the command line. Up and down walk the history.
+// handlePromptKey edits the command line. Up and down pick a suggestion,
+// which replaces the input until something is typed; tab completes the
+// highlighted (or first) suggestion so it can be edited.
 func (m *Model) handlePromptKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "ctrl+c":
@@ -192,31 +197,100 @@ func (m *Model) handlePromptKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		m.prompting = false
 		return m.runJob(m.promptTarget, cmd)
-	case "up", "ctrl+p":
-		if m.historyIdx > 0 {
-			m.historyIdx--
-			m.promptText = m.history[m.historyIdx]
-		}
 	case "down", "ctrl+n":
-		if m.historyIdx < len(m.history) {
-			m.historyIdx++
-			m.promptText = ""
-			if m.historyIdx < len(m.history) {
-				m.promptText = m.history[m.historyIdx]
-			}
+		m.moveSuggestion(1)
+	case "up", "ctrl+p":
+		m.moveSuggestion(-1)
+	case "tab":
+		if list := m.suggestions(); len(list) > 0 {
+			m.setPromptText(list[max(0, m.suggestIdx)].cmd)
 		}
+	case "ctrl+s":
+		m.toggleSaved()
 	case "backspace":
 		if r := []rune(m.promptText); len(r) > 0 {
-			m.promptText = string(r[:len(r)-1])
+			m.setPromptText(string(r[:len(r)-1]))
 		}
 	case "ctrl+u":
-		m.promptText = ""
+		m.setPromptText("")
 	default:
 		if text, ok := typedText(msg); ok {
-			m.promptText += text
+			m.setPromptText(m.promptText + text)
 		}
 	}
 	return nil
+}
+
+// setPromptText replaces the input as if it had been typed.
+func (m *Model) setPromptText(text string) {
+	m.promptText, m.promptQuery, m.suggestIdx = text, text, -1
+	m.promptNote = ""
+}
+
+// suggestion is a command offered below the prompt.
+type suggestion struct {
+	cmd   string
+	saved bool
+}
+
+// suggestions lists the commands containing what was typed: this session's
+// history, most recent first, then saved commands that haven't run yet.
+func (m *Model) suggestions() []suggestion {
+	limit := min(maxSuggestions, m.height-4) // the prompt and its border must fit too
+	q := strings.ToLower(strings.TrimSpace(m.promptQuery))
+	var out []suggestion
+	add := func(cmd string) {
+		if len(out) >= limit || !strings.Contains(strings.ToLower(cmd), q) ||
+			slices.ContainsFunc(out, func(s suggestion) bool { return s.cmd == cmd }) {
+			return
+		}
+		out = append(out, suggestion{cmd: cmd, saved: m.commands.Saved(cmd)})
+	}
+	for _, cmd := range slices.Backward(m.history) {
+		add(cmd)
+	}
+	for _, cmd := range m.commands.Global {
+		add(cmd)
+	}
+	return out
+}
+
+// moveSuggestion highlights the next (d=1) or previous (d=-1) suggestion and
+// puts it in the input. Moving up past the first one restores what was typed.
+func (m *Model) moveSuggestion(d int) {
+	list := m.suggestions()
+	i := m.suggestIdx + d
+	if i < -1 || i >= len(list) {
+		return
+	}
+	m.suggestIdx, m.promptText = i, m.promptQuery
+	if i >= 0 {
+		m.promptText = list[i].cmd
+	}
+}
+
+// toggleSaved saves the command in the input, or forgets it if it is saved.
+func (m *Model) toggleSaved() {
+	cmd := strings.TrimSpace(m.promptText)
+	if cmd == "" {
+		return
+	}
+	saved, err := m.commands.Toggle(cmd)
+	switch {
+	case err != nil:
+		m.promptNote, m.promptNoteErr = "could not save: "+err.Error(), true
+	case saved:
+		m.promptNote, m.promptNoteErr = "★ saved", false
+	default:
+		m.promptNote, m.promptNoteErr = "forgotten", false
+	}
+	if m.suggestIdx >= 0 {
+		// A forgotten command that never ran drops out of the list.
+		m.suggestIdx = slices.IndexFunc(m.suggestions(), func(s suggestion) bool { return s.cmd == m.promptText })
+		if m.suggestIdx < 0 {
+			m.promptQuery = m.promptText
+		}
+	}
 }
 
 func (m *Model) addHistory(cmd string) {
@@ -503,28 +577,55 @@ func overlay(base, box []string, width int) []string {
 	return out
 }
 
-// promptBox is the popup the command is typed into. When the input is wider
-// than the box its start scrolls out of view so the cursor stays visible.
+// promptBox is the popup the command is typed into, with the suggestions
+// below it. When the input is wider than the box its start scrolls out of
+// view so the cursor stays visible.
 func (m *Model) promptBox() []string {
 	title := m.promptTarget.DisplayName()
 	if m.promptTarget.Project != "" {
 		title = m.promptTarget.Project + "/" + title
 	}
+	list := m.suggestions()
 	box := panel{
 		title:  styleAccent.Render("run") + styleDim.Render(" › ") + styleProject.Render(title),
 		border: styleFocus,
 		width:  m.popupWidth(),
-		height: 1,
+		height: 1 + len(list),
+	}
+	if m.promptNote != "" {
+		st := styleYellow
+		if m.promptNoteErr {
+			st = styleError
+		}
+		// edge drops text that doesn't fit beside the corners and padding.
+		box.bottomRight = st.Render(ansi.Truncate(m.promptNote, max(0, box.width-9), "…"))
 	}
 	input := m.promptText
 	if over := ansi.StringWidth(input) + 3 - box.innerWidth(); over > 0 {
 		input = ansi.TruncateLeft(input, over+1, "…")
 	}
-	return box.render([]string{styleAccent.Render("$ ") + input + styleAccent.Render("█")})
+	lines := []string{styleAccent.Render("$ ") + input + styleAccent.Render("█")}
+	width := box.innerWidth()
+	for i, s := range list {
+		p := painter{selected: i == m.suggestIdx}
+		mark := "  "
+		if s.saved {
+			mark = "★ "
+		}
+		line := p.paint(styleYellow, mark) + p.paint(lipgloss.NewStyle(), ansi.Truncate(s.cmd, max(0, width-2), "…"))
+		lines = append(lines, line+p.paint(styleDim, strings.Repeat(" ", max(0, width-ansi.StringWidth(line)))))
+	}
+	return box.render(lines)
 }
 
 func (m *Model) promptFooter() string {
-	return hintBar([][2]string{{"enter", "run"}, {"esc", "cancel"}, {"↑/↓", "history"}, {"^u", "clear"}}, m.width)
+	save := "save"
+	if m.commands.Saved(strings.TrimSpace(m.promptText)) {
+		save = "forget"
+	}
+	return hintBar([][2]string{
+		{"enter", "run"}, {"esc", "cancel"}, {"↑/↓", "suggestions"}, {"tab", "complete"}, {"^s", save}, {"^u", "clear"},
+	}, m.width)
 }
 
 // readChunks blocks for output, then takes whatever else is buffered so busy

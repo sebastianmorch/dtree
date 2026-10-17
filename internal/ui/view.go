@@ -594,6 +594,11 @@ var helpSections = []struct {
 		{"ctrl+c", "stop command (popup), again to kill"},
 		{"i", "type into the command (popup), esc back"},
 	}},
+	{"Run prompt (x)", [][2]string{
+		{"↑ / ↓", "pick a recent or saved (★) command"},
+		{"tab", "complete the command to edit it"},
+		{"ctrl+s", "save the command · forget a saved one"},
+	}},
 }
 
 func (m *Model) helpView() string {
