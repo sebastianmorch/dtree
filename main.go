@@ -4,12 +4,12 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"runtime/debug"
 
 	tea "github.com/charmbracelet/bubbletea"
+	flag "github.com/spf13/pflag"
 
 	"github.com/sebastianmorch/dtree/internal/docker"
 	"github.com/sebastianmorch/dtree/internal/ui"
@@ -34,12 +34,19 @@ func buildVersion() string {
 func main() {
 	var all, showVersion bool
 	var filter string
-	flag.BoolVar(&all, "a", false, "show all containers, not only running ones")
-	flag.BoolVar(&all, "all", false, "show all containers, not only running ones")
-	flag.StringVar(&filter, "f", "", "start with the tree filtered by container or project name")
-	flag.StringVar(&filter, "filter", "", "start with the tree filtered by container or project name")
+	flag.BoolVarP(&all, "all", "a", false, "show all containers, not only running ones")
+	flag.StringVarP(&filter, "filter", "f", "", "start with the tree filtered by container or project name")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	help := flag.BoolP("help", "h", false, "show this help")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: dtree [options]\n\nOptions:\n%s", flag.CommandLine.FlagUsages())
+	}
 	flag.Parse()
+
+	if *help {
+		flag.Usage()
+		return
+	}
 
 	if showVersion {
 		fmt.Println("dtree", buildVersion())
