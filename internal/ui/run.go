@@ -197,6 +197,16 @@ func (m *Model) handlePromptKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		m.prompting = false
 		return m.runJob(m.promptTarget, cmd)
+	case "ctrl+o", "ctrl+t":
+		// Run in the full terminal, for programs that need it (top, vim);
+		// ctrl+t opens a shell when the command ends.
+		cmd := strings.TrimSpace(m.promptText)
+		if cmd == "" {
+			return nil
+		}
+		m.prompting = false
+		m.addHistory(cmd)
+		return m.shell(m.promptTarget, cmd, msg.String() == "ctrl+t")
 	case "down", "ctrl+n":
 		m.moveSuggestion(1)
 	case "up", "ctrl+p":
@@ -624,7 +634,8 @@ func (m *Model) promptFooter() string {
 		save = "forget"
 	}
 	return hintBar([][2]string{
-		{"enter", "run"}, {"esc", "cancel"}, {"↑/↓", "suggestions"}, {"tab", "complete"}, {"^s", save}, {"^u", "clear"},
+		{"enter", "run"}, {"^o", "in terminal"}, {"^t", "then shell"}, {"esc", "cancel"},
+		{"↑/↓", "suggestions"}, {"tab", "complete"}, {"^s", save}, {"^u", "clear"},
 	}, m.width)
 }
 

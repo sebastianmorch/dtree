@@ -72,6 +72,8 @@ type (
 	}
 	execDoneMsg struct {
 		name   string
+		cmd    string // the command run from the prompt; "" for a shell
+		stay   bool   // a shell was opened after the command
 		err    error
 		stderr string
 	}
@@ -338,7 +340,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		m.tree.Bottom()
 	case "enter":
 		if c := m.tree.SelectedContainer(); c != nil {
-			return m.shell(*c)
+			return m.shell(*c, "", false)
 		}
 		m.tree.Toggle()
 	case " ":
@@ -357,7 +359,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case "i":
 			return m.openInspect(*c)
 		default:
-			return m.shell(*c)
+			return m.shell(*c, "", false)
 		}
 	case "x":
 		return m.startPrompt()
@@ -627,25 +629,48 @@ func (m *Model) pruneDetails(cs []tree.Container) {
 	}
 }
 
-func (m *Model) shell(c tree.Container) tea.Cmd {
+// shell takes over the terminal for an interactive shell in c, or for a
+// command from the prompt. With stay, a shell opens after the command;
+// without it, dtree waits for enter so the command's output can be read.
+func (m *Model) shell(c tree.Container, command string, stay bool) tea.Cmd {
 	if !c.Running() {
 		return m.setStatus(c.DisplayName()+" is not running", true)
 	}
-	cmd := exec.Command("docker", "exec", "-it", c.ID, "sh", "-c", shellScript)
+	cmd := exec.Command("docker", shellArgs(c.ID, command, stay)...)
 	// With -t the container's output goes to stdout, so stderr only carries
 	// errors from the docker CLI itself; keep a copy to show after returning.
 	stderr := &bytes.Buffer{}
 	cmd.Stderr = &teeWriter{w: os.Stderr, buf: stderr}
 	name := c.DisplayName()
-	return tea.Exec(&clearScreenExec{cmd}, func(err error) tea.Msg {
-		return execDoneMsg{name: name, err: err, stderr: stderr.String()}
+	run := &clearScreenExec{Cmd: cmd, pause: command != "" && !stay}
+	return tea.Exec(run, func(err error) tea.Msg {
+		return execDoneMsg{name: name, cmd: command, stay: stay, err: err, stderr: stderr.String()}
 	})
+}
+
+// shellArgs are the docker arguments for shell. The command is followed by
+// the shell script on a new line, so a trailing comment in it can't hide
+// the script.
+func shellArgs(id, command string, stay bool) []string {
+	script := shellScript
+	switch {
+	case command != "" && stay:
+		script = command + "\n" + shellScript
+	case command != "":
+		script = command
+	}
+	return []string{"exec", "-it", id, "sh", "-c", script}
 }
 
 // clearScreenExec clears the terminal before running the command. Bubble Tea
 // leaves the alternate screen for exec, which would otherwise show whatever
 // was in the terminal before dtree started above the container's prompt.
-type clearScreenExec struct{ *exec.Cmd }
+// With pause it waits for enter after the command, so dtree doesn't redraw
+// over the output.
+type clearScreenExec struct {
+	*exec.Cmd
+	pause bool
+}
 
 const clearScreen = "\x1b[H\x1b[2J"
 
@@ -673,7 +698,38 @@ func (c *clearScreenExec) Run() error {
 		out = os.Stdout
 	}
 	_, _ = io.WriteString(out, clearScreen)
-	return c.Cmd.Run()
+	err := c.Cmd.Run()
+	if c.pause {
+		_, _ = io.WriteString(out, "\r\n"+styleMarker.Render("── "+exitText(err)+" · press enter to return to dtree ──"))
+		waitForEnter(c.Stdin)
+	}
+	return err
+}
+
+func exitText(err error) string {
+	var exitErr *exec.ExitError
+	switch {
+	case err == nil:
+		return "exited with code 0"
+	case errors.As(err, &exitErr):
+		return fmt.Sprintf("exited with code %d", exitErr.ExitCode())
+	default:
+		return err.Error()
+	}
+}
+
+// waitForEnter reads until a line ends. Bubble Tea restores the terminal's
+// line mode before exec, but a raw terminal sends \r, so either ends it.
+func waitForEnter(r io.Reader) {
+	if r == nil {
+		r = os.Stdin
+	}
+	b := make([]byte, 1)
+	for {
+		if n, err := r.Read(b); err != nil || n == 1 && (b[0] == '\n' || b[0] == '\r') {
+			return
+		}
+	}
 }
 
 func (m *Model) execResult(msg execDoneMsg) tea.Cmd {
@@ -687,6 +743,11 @@ func (m *Model) execResult(msg execDoneMsg) tea.Cmd {
 	code := exitErr.ExitCode()
 	detail := firstLine(msg.stderr)
 	switch {
+	case msg.cmd != "" && !msg.stay && detail != "":
+		return m.setStatus(fmt.Sprintf("exec %s (exit %d): %s", msg.name, code, detail), true)
+	case msg.cmd != "" && !msg.stay:
+		// Its output, errors included, was on screen until enter.
+		return m.setStatus(fmt.Sprintf("%s in %s exited with code %d", msg.cmd, msg.name, code), true)
 	case code == 126 || code == 127:
 		// The runtime's error went to the TTY; stderr only has CLI hints.
 		return m.setStatus(fmt.Sprintf("could not start a shell in %s (exit %d) – the image may not include sh", msg.name, code), true)

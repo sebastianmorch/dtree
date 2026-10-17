@@ -20,7 +20,10 @@ open a shell, all with vim keys or the arrow keys.
   ignores it. When a command asks for input, press `i` to switch the popup to
   input mode: every key goes to the command until `esc` switches back to
   scrolling. Commands run with `sh -c` in a terminal, but the popup only shows
-  their output line by line, so full-screen programs (`vim`, `top`) need `s`.
+  their output line by line, so run full-screen programs (`vim`, `top`) with
+  `ctrl+o` instead of `enter`: the command gets the whole terminal and dtree
+  comes back after it ends and you press `enter`. `ctrl+t` does the same,
+  then opens a shell in the container.
   Quitting dtree stops commands that are still running.
 - The command prompt suggests commands as you type: the ones run this session
   (most recent first) and your saved commands (★). Pick one with `↑`/`↓`,
@@ -123,6 +126,8 @@ Press `?` inside dtree for this list.
 | `ctrl+s` | save the command · forget a saved one |
 | `ctrl+u` | clear |
 | `enter` / `esc` | run / cancel |
+| `ctrl+o` | run in the terminal (for `top`, `vim`, REPLs) |
+| `ctrl+t` | run in the terminal, then open a shell |
 
 ## Development
 

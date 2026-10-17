@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -701,7 +702,7 @@ func TestMultiRuneInput(t *testing.T) {
 
 func TestClearScreenExecClearsBeforeRunning(t *testing.T) {
 	var out strings.Builder
-	c := &clearScreenExec{exec.Command("echo", "hi")}
+	c := &clearScreenExec{Cmd: exec.Command("echo", "hi")}
 	c.SetStdout(&out)
 	if err := c.Run(); err != nil {
 		t.Fatal(err)
@@ -709,6 +710,78 @@ func TestClearScreenExecClearsBeforeRunning(t *testing.T) {
 	if out.String() != clearScreen+"hi\n" {
 		t.Fatalf("output %q", out.String())
 	}
+}
+
+func TestClearScreenExecPausesAfterCommand(t *testing.T) {
+	var out strings.Builder
+	// A file, like the terminal: the command inherits it instead of exec
+	// copying all of it into the command.
+	in, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	_, _ = w.WriteString("xy\rrest")
+	w.Close()
+	c := &clearScreenExec{Cmd: exec.Command("sh", "-c", "echo hi; exit 3"), pause: true}
+	c.SetStdout(&out)
+	c.SetStdin(in)
+	if err := c.Run(); err == nil {
+		t.Fatal("expected the exit error")
+	}
+	if got := ansi.Strip(out.String()); !strings.Contains(got, "hi\n\r\n── exited with code 3 · press enter to return to dtree ──") {
+		t.Fatalf("output %q", got)
+	}
+	if rest, _ := io.ReadAll(in); string(rest) != "rest" {
+		t.Fatalf("should read up to enter, left %q", rest)
+	}
+}
+
+func TestShellArgs(t *testing.T) {
+	for _, tc := range []struct {
+		cmd  string
+		stay bool
+		want string
+	}{
+		{"", false, shellScript},
+		{"top", false, "top"},
+		{"cd /app # go", true, "cd /app # go\n" + shellScript},
+	} {
+		got := shellArgs("a1", tc.cmd, tc.stay)
+		want := []string{"exec", "-it", "a1", "sh", "-c", tc.want}
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("shellArgs(%q, %v) = %q", tc.cmd, tc.stay, got)
+		}
+	}
+}
+
+func TestPromptRunsInTerminal(t *testing.T) {
+	m, f := setup(t)
+	press(t, m, "j", "x")
+	typeText(m, "top")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	if cmd == nil || m.prompting || len(f.execs) != 0 {
+		t.Fatalf("ctrl+o should hand the terminal to the command, not the popup (execs %q)", f.execs)
+	}
+	press(t, m, "x", "down")
+	if m.promptText != "top" {
+		t.Fatalf("ctrl+o should add to the history, got %q", m.promptText)
+	}
+	press(t, m, "esc")
+
+	m.Update(execDoneMsg{name: "api", cmd: "top", err: exitError(t, 2)})
+	if s := screen(m); !strings.Contains(s, "top in api exited with code 2") {
+		t.Fatalf("exit code not shown:\n%s", s)
+	}
+}
+
+func exitError(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	if err == nil {
+		t.Fatal("expected an exit error")
+	}
+	return err
 }
 
 func typeText(m *Model, text string) {
