@@ -748,7 +748,7 @@ func TestShellArgs(t *testing.T) {
 		{"cd /app # go", true, "cd /app # go\n" + shellScript},
 	} {
 		got := shellArgs("a1", tc.cmd, tc.stay)
-		want := []string{"exec", "-it", "a1", "sh", "-c", tc.want}
+		want := []string{"exec", "-it", "a1", "sh", "-c", noFlowControl + "\n" + tc.want}
 		if strings.Join(got, "|") != strings.Join(want, "|") {
 			t.Errorf("shellArgs(%q, %v) = %q", tc.cmd, tc.stay, got)
 		}

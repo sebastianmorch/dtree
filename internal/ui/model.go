@@ -30,6 +30,9 @@ const (
 
 	// Prefer bash, fall back to sh, in a single exec.
 	shellScript = "command -v bash >/dev/null 2>&1 && exec bash || exec sh"
+	// Turn off XON/XOFF flow control on the container's tty, so ctrl+s
+	// doesn't freeze the shell until ctrl+q.
+	noFlowControl = "stty -ixon 2>/dev/null"
 )
 
 type mode int
@@ -650,7 +653,7 @@ func (m *Model) shell(c tree.Container, command string, stay bool) tea.Cmd {
 
 // shellArgs are the docker arguments for shell. The command is followed by
 // the shell script on a new line, so a trailing comment in it can't hide
-// the script.
+// the script. Flow control is turned off first, on a line of its own.
 func shellArgs(id, command string, stay bool) []string {
 	script := shellScript
 	switch {
@@ -659,7 +662,7 @@ func shellArgs(id, command string, stay bool) []string {
 	case command != "":
 		script = command
 	}
-	return []string{"exec", "-it", id, "sh", "-c", script}
+	return []string{"exec", "-it", id, "sh", "-c", noFlowControl + "\n" + script}
 }
 
 // clearScreenExec clears the terminal before running the command. Bubble Tea
