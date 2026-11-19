@@ -598,6 +598,7 @@ var helpSections = []struct {
 		{"↑ / ↓", "pick a recent or saved (★) command"},
 		{"tab", "complete the command to edit it"},
 		{"ctrl+s", "save the command · forget a saved one"},
+		{"ctrl+e", "edit a saved command and its alias"},
 		{"ctrl+o", "run in the terminal (top, vim)"},
 		{"ctrl+t", "run in the terminal, then open a shell"},
 	}},

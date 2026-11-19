@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -898,6 +899,105 @@ func TestPromptSuggestions(t *testing.T) {
 	press(t, m, "enter")
 	if len(f.execs) != 1 || f.execs[0] != "a1: df -h" {
 		t.Fatalf("execs %q", f.execs)
+	}
+}
+
+func TestPromptAliasesAndEditing(t *testing.T) {
+	m, f := setup(t)
+	path := filepath.Join(t.TempDir(), "commands.yaml")
+	yaml := "global:\n  - df -h\n  - cmd: tail -f storage/logs/laravel.log\n    alias: laravel log\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmds, err := config.LoadCommands(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetCommands(cmds)
+
+	// The alias is shown instead of the command, and typing matches it.
+	press(t, m, "j", "x")
+	if s := screen(m); !strings.Contains(s, "★ laravel log") || strings.Contains(s, "tail -f") {
+		t.Fatalf("alias not shown in place of the command:\n%s", s)
+	}
+	typeText(m, "laravel")
+	press(t, m, "down")
+	if m.promptText != "tail -f storage/logs/laravel.log" {
+		t.Fatalf("picked %q", m.promptText)
+	}
+
+	// ctrl+e edits it: rename the alias and change the command.
+	press(t, m, "ctrl+e")
+	if s := screen(m); !strings.Contains(s, "edit saved command") || !strings.Contains(s, "alias   › laravel log█") {
+		t.Fatalf("edit form not shown:\n%s", s)
+	}
+	press(t, m, "ctrl+u")
+	typeText(m, "app log")
+	press(t, m, "tab", "ctrl+u")
+	typeText(m, "tail -f /var/log/app.log")
+	press(t, m, "enter")
+	if m.edit != nil || m.promptText != "tail -f /var/log/app.log" || !strings.Contains(screen(m), "★ saved") {
+		t.Fatalf("after saving: edit=%v text=%q\n%s", m.edit, m.promptText, screen(m))
+	}
+	want := []config.Command{{Cmd: "df -h"}, {Cmd: "tail -f /var/log/app.log", Alias: "app log"}}
+	if reread, _ := config.LoadCommands(path); !slices.Equal(reread.Global, want) {
+		t.Fatalf("file has %v", reread.Global)
+	}
+
+	// An unsaved command is saved with an alias; esc leaves the form alone.
+	press(t, m, "ctrl+u")
+	typeText(m, "uptime")
+	press(t, m, "ctrl+e")
+	if !strings.Contains(screen(m), "save command") {
+		t.Fatalf("form for a new command not shown:\n%s", screen(m))
+	}
+	press(t, m, "esc")
+	if m.edit != nil || !m.prompting || cmds.Saved("uptime") {
+		t.Fatal("esc should go back to the prompt without saving")
+	}
+	press(t, m, "ctrl+e")
+	typeText(m, "boot time")
+	press(t, m, "enter", "ctrl+u")
+	if c, ok := cmds.Find("uptime"); !ok || c.Alias != "boot time" {
+		t.Fatalf("uptime not saved with its alias: %v", cmds.Global)
+	}
+
+	// A clash is reported and the form stays open.
+	typeText(m, "df")
+	press(t, m, "down", "ctrl+e", "tab", "ctrl+u")
+	typeText(m, "uptime")
+	press(t, m, "enter")
+	if m.edit == nil || !strings.Contains(screen(m), "already saved") {
+		t.Fatalf("clash not reported:\n%s", screen(m))
+	}
+	press(t, m, "esc", "enter")
+	if len(f.execs) != 1 || f.execs[0] != "a1: df -h" {
+		t.Fatalf("execs %q", f.execs)
+	}
+}
+
+func TestPromptRunsTypedAlias(t *testing.T) {
+	m, f := setup(t)
+	cmds, _ := config.LoadCommands("")
+	cmds.Put("", config.Command{Cmd: "tail -f storage/logs/laravel.log", Alias: "laravel log"})
+	m.SetCommands(cmds)
+
+	press(t, m, "j", "x")
+	typeText(m, "Laravel Log")
+	if s := screen(m); !strings.Contains(s, "→ tail -f storage/logs/laravel.log") {
+		t.Fatalf("the command an alias stands for should be shown:\n%s", s)
+	}
+	press(t, m, "ctrl+s") // forgets the command, doesn't save the alias
+	if cmds.Saved("Laravel Log") || cmds.Saved("tail -f storage/logs/laravel.log") {
+		t.Fatalf("ctrl+s on an alias: %v", cmds.Global)
+	}
+	cmds.Put("", config.Command{Cmd: "tail -f storage/logs/laravel.log", Alias: "laravel log"})
+	press(t, m, "enter")
+	if len(f.execs) != 1 || f.execs[0] != "a1: tail -f storage/logs/laravel.log" {
+		t.Fatalf("execs %q", f.execs)
+	}
+	if m.history[len(m.history)-1] != "tail -f storage/logs/laravel.log" {
+		t.Fatalf("history %q", m.history)
 	}
 }
 

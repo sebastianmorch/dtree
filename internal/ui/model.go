@@ -121,7 +121,8 @@ type Model struct {
 	promptTarget  tree.Container
 	promptNote    string // shown on the prompt's border after ctrl+s
 	promptNoteErr bool
-	suggestIdx    int // highlighted suggestion, -1 for none
+	suggestIdx    int          // highlighted suggestion, -1 for none
+	edit          *commandEdit // the saved command being edited (ctrl+e)
 	history       []string
 	commands      *config.Commands
 	jobs          map[string]*job

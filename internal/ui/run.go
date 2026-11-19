@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/sebastianmorch/dtree/internal/config"
 	"github.com/sebastianmorch/dtree/internal/docker"
 	"github.com/sebastianmorch/dtree/internal/tree"
 )
@@ -185,13 +186,16 @@ func (m *Model) startPrompt() tea.Cmd {
 // which replaces the input until something is typed; tab completes the
 // highlighted (or first) suggestion so it can be edited.
 func (m *Model) handlePromptKey(msg tea.KeyMsg) tea.Cmd {
+	if m.edit != nil {
+		return m.handleEditKey(msg)
+	}
 	switch msg.String() {
 	case "ctrl+c":
 		return m.quit()
 	case "esc":
 		m.prompting = false
 	case "enter":
-		cmd := strings.TrimSpace(m.promptText)
+		cmd := m.promptCommand()
 		if cmd == "" {
 			return nil
 		}
@@ -200,7 +204,7 @@ func (m *Model) handlePromptKey(msg tea.KeyMsg) tea.Cmd {
 	case "ctrl+o", "ctrl+t":
 		// Run in the full terminal, for programs that need it (top, vim);
 		// ctrl+t opens a shell when the command ends.
-		cmd := strings.TrimSpace(m.promptText)
+		cmd := m.promptCommand()
 		if cmd == "" {
 			return nil
 		}
@@ -217,10 +221,10 @@ func (m *Model) handlePromptKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	case "ctrl+s":
 		m.toggleSaved()
+	case "ctrl+e":
+		m.startEdit()
 	case "backspace":
-		if r := []rune(m.promptText); len(r) > 0 {
-			m.setPromptText(string(r[:len(r)-1]))
-		}
+		m.setPromptText(dropLastRune(m.promptText))
 	case "ctrl+u":
 		m.setPromptText("")
 	default:
@@ -237,30 +241,48 @@ func (m *Model) setPromptText(text string) {
 	m.promptNote = ""
 }
 
-// suggestion is a command offered below the prompt.
-type suggestion struct {
-	cmd   string
-	saved bool
+func dropLastRune(s string) string {
+	r := []rune(s)
+	return string(r[:max(0, len(r)-1)])
 }
 
-// suggestions lists the commands containing what was typed: this session's
-// history, most recent first, then saved commands that haven't run yet.
+// promptCommand is the command the input stands for: a saved command's
+// alias is replaced by the command.
+func (m *Model) promptCommand() string { return m.commands.Resolve(m.promptText) }
+
+// suggestion is a command offered below the prompt. label is what is shown:
+// the alias of a saved command that has one, otherwise the command.
+type suggestion struct {
+	cmd, label string
+	saved      bool
+}
+
+// suggestions lists the commands whose text or alias contains what was
+// typed: this session's history, most recent first, then saved commands that
+// haven't run yet.
 func (m *Model) suggestions() []suggestion {
 	limit := min(maxSuggestions, m.height-4) // the prompt and its border must fit too
 	q := strings.ToLower(strings.TrimSpace(m.promptQuery))
 	var out []suggestion
 	add := func(cmd string) {
-		if len(out) >= limit || !strings.Contains(strings.ToLower(cmd), q) ||
-			slices.ContainsFunc(out, func(s suggestion) bool { return s.cmd == cmd }) {
+		if len(out) >= limit || slices.ContainsFunc(out, func(s suggestion) bool { return s.cmd == cmd }) {
 			return
 		}
-		out = append(out, suggestion{cmd: cmd, saved: m.commands.Saved(cmd)})
+		saved, ok := m.commands.Find(cmd)
+		if !strings.Contains(strings.ToLower(cmd), q) && !strings.Contains(strings.ToLower(saved.Alias), q) {
+			return
+		}
+		label := cmd
+		if ok {
+			label = saved.Label()
+		}
+		out = append(out, suggestion{cmd: cmd, label: label, saved: ok})
 	}
 	for _, cmd := range slices.Backward(m.history) {
 		add(cmd)
 	}
-	for _, cmd := range m.commands.Global {
-		add(cmd)
+	for _, c := range m.commands.Global {
+		add(c.Cmd)
 	}
 	return out
 }
@@ -281,7 +303,7 @@ func (m *Model) moveSuggestion(d int) {
 
 // toggleSaved saves the command in the input, or forgets it if it is saved.
 func (m *Model) toggleSaved() {
-	cmd := strings.TrimSpace(m.promptText)
+	cmd := m.promptCommand()
 	if cmd == "" {
 		return
 	}
@@ -301,6 +323,74 @@ func (m *Model) toggleSaved() {
 			m.promptQuery = m.promptText
 		}
 	}
+}
+
+// commandEdit is the form ctrl+e opens over the prompt to change a saved
+// command and its alias, or to save the command in the prompt with one.
+type commandEdit struct {
+	old    string    // the saved command being changed; "" when adding one
+	fields [2]string // alias, command
+	field  int       // the field being typed into
+}
+
+const (
+	editAlias = iota
+	editCmd
+)
+
+// startEdit opens the form for the command in the prompt. A saved command
+// is edited; any other command is saved with what the form holds.
+func (m *Model) startEdit() {
+	cmd := m.promptCommand()
+	if cmd == "" {
+		return
+	}
+	e := &commandEdit{fields: [2]string{"", cmd}}
+	if saved, ok := m.commands.Find(cmd); ok {
+		e.old, e.fields[editAlias] = cmd, saved.Alias
+	}
+	m.edit = e
+	m.promptNote = ""
+}
+
+// handleEditKey edits the form's fields. tab and the arrows move between
+// them, enter saves and esc goes back to the prompt unchanged.
+func (m *Model) handleEditKey(msg tea.KeyMsg) tea.Cmd {
+	e := m.edit
+	field := &e.fields[e.field]
+	switch msg.String() {
+	case "ctrl+c":
+		return m.quit()
+	case "esc":
+		m.edit = nil
+		m.promptNote = ""
+	case "enter":
+		m.saveEdit()
+	case "tab", "shift+tab", "up", "down", "ctrl+n", "ctrl+p":
+		e.field = 1 - e.field
+	case "backspace":
+		*field = dropLastRune(*field)
+	case "ctrl+u":
+		*field = ""
+	default:
+		if text, ok := typedText(msg); ok {
+			*field += text
+		}
+	}
+	return nil
+}
+
+// saveEdit saves the form. The edited command is put in the prompt.
+func (m *Model) saveEdit() {
+	e := m.edit
+	cmd := config.Command{Alias: e.fields[editAlias], Cmd: e.fields[editCmd]}
+	if err := m.commands.Put(e.old, cmd); err != nil {
+		m.promptNote, m.promptNoteErr = "could not save: "+err.Error(), true
+		return
+	}
+	m.edit = nil
+	m.setPromptText(strings.TrimSpace(cmd.Cmd))
+	m.promptNote, m.promptNoteErr = "★ saved", false
 }
 
 func (m *Model) addHistory(cmd string) {
@@ -591,6 +681,9 @@ func overlay(base, box []string, width int) []string {
 // below it. When the input is wider than the box its start scrolls out of
 // view so the cursor stays visible.
 func (m *Model) promptBox() []string {
+	if m.edit != nil {
+		return m.editBox()
+	}
 	title := m.promptTarget.DisplayName()
 	if m.promptTarget.Project != "" {
 		title = m.promptTarget.Project + "/" + title
@@ -602,19 +695,14 @@ func (m *Model) promptBox() []string {
 		width:  m.popupWidth(),
 		height: 1 + len(list),
 	}
-	if m.promptNote != "" {
-		st := styleYellow
-		if m.promptNoteErr {
-			st = styleError
-		}
-		// edge drops text that doesn't fit beside the corners and padding.
-		box.bottomRight = st.Render(ansi.Truncate(m.promptNote, max(0, box.width-9), "…"))
+	m.notePrompt(&box)
+	input := inputLine(styleAccent.Render("$ "), m.promptText, box.innerWidth(), true)
+	if cmd := m.promptCommand(); cmd != strings.TrimSpace(m.promptText) {
+		// A typed alias: show what will run.
+		room := max(0, box.innerWidth()-ansi.StringWidth(input))
+		input += styleDim.Render(ansi.Truncate("  → "+cmd, room, "…"))
 	}
-	input := m.promptText
-	if over := ansi.StringWidth(input) + 3 - box.innerWidth(); over > 0 {
-		input = ansi.TruncateLeft(input, over+1, "…")
-	}
-	lines := []string{styleAccent.Render("$ ") + input + styleAccent.Render("█")}
+	lines := []string{input}
 	width := box.innerWidth()
 	for i, s := range list {
 		p := painter{selected: i == m.suggestIdx}
@@ -622,20 +710,75 @@ func (m *Model) promptBox() []string {
 		if s.saved {
 			mark = "★ "
 		}
-		line := p.paint(styleYellow, mark) + p.paint(lipgloss.NewStyle(), ansi.Truncate(s.cmd, max(0, width-2), "…"))
+		line := p.paint(styleYellow, mark) + p.paint(lipgloss.NewStyle(), ansi.Truncate(s.label, max(0, width-2), "…"))
 		lines = append(lines, line+p.paint(styleDim, strings.Repeat(" ", max(0, width-ansi.StringWidth(line)))))
 	}
 	return box.render(lines)
 }
 
+// editBox is the ctrl+e form, drawn in place of the prompt.
+func (m *Model) editBox() []string {
+	e := m.edit
+	title := "edit saved command"
+	if e.old == "" {
+		title = "save command"
+	}
+	box := panel{title: styleAccent.Render(title), border: styleFocus, width: m.popupWidth(), height: 2}
+	m.notePrompt(&box)
+	labels := [2]string{"alias   ", "command "}
+	var lines []string
+	for i, text := range e.fields {
+		st := styleDim
+		if i == e.field {
+			st = styleAccent
+		}
+		lines = append(lines, inputLine(st.Render(labels[i]+"› "), text, box.innerWidth(), i == e.field))
+	}
+	if e.fields[editAlias] == "" && e.field != editAlias {
+		lines[editAlias] += styleDim.Render("(none: the command is shown)")
+	}
+	return box.render(lines)
+}
+
+// notePrompt shows the note left by saving on the box's bottom border.
+func (m *Model) notePrompt(box *panel) {
+	if m.promptNote == "" {
+		return
+	}
+	st := styleYellow
+	if m.promptNoteErr {
+		st = styleError
+	}
+	// edge drops text that doesn't fit beside the corners and padding.
+	box.bottomRight = st.Render(ansi.Truncate(m.promptNote, max(0, box.width-9), "…"))
+}
+
+// inputLine is a text field after its prefix. When the text is wider than
+// the line its start scrolls out of view so the cursor stays visible.
+func inputLine(prefix, text string, width int, cursor bool) string {
+	room := width - ansi.StringWidth(prefix) - 1 // the cursor takes a cell
+	if over := ansi.StringWidth(text) - room; over > 0 {
+		text = ansi.TruncateLeft(text, over+1, "…")
+	}
+	if cursor {
+		text += styleAccent.Render("█")
+	}
+	return prefix + text
+}
+
 func (m *Model) promptFooter() string {
-	save := "save"
-	if m.commands.Saved(strings.TrimSpace(m.promptText)) {
-		save = "forget"
+	if m.edit != nil {
+		return hintBar([][2]string{
+			{"enter", "save"}, {"tab", "next field"}, {"^u", "clear field"}, {"esc", "back"},
+		}, m.width)
+	}
+	save, edit := "save", "alias"
+	if m.commands.Saved(m.promptCommand()) {
+		save, edit = "forget", "edit"
 	}
 	return hintBar([][2]string{
-		{"enter", "run"}, {"^o", "in terminal"}, {"^t", "then shell"}, {"esc", "cancel"},
-		{"↑/↓", "suggestions"}, {"tab", "complete"}, {"^s", save}, {"^u", "clear"},
+		{"enter", "run"}, {"esc", "cancel"}, {"↑/↓", "suggestions"}, {"tab", "complete"},
+		{"^s", save}, {"^e", edit}, {"^o", "in terminal"}, {"^t", "then shell"}, {"^u", "clear"},
 	}, m.width)
 }
 

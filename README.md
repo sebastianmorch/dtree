@@ -28,7 +28,10 @@ open a shell, all with vim keys or the arrow keys.
 - The command prompt suggests commands as you type: the ones run this session
   (most recent first) and your saved commands (★). Pick one with `↑`/`↓`,
   or press `tab` to complete it and edit it first. `ctrl+s` saves the command
-  in the prompt, or forgets it if it is already saved.
+  in the prompt, or forgets it if it is already saved. `ctrl+e` edits a saved
+  command and its alias (or saves a new one with an alias); a saved command
+  with an alias is listed by its alias, and typing matches either. Typing an
+  alias in full and pressing `enter` runs its command.
 
 ## Saved commands
 
@@ -40,7 +43,11 @@ You can also edit the file by hand:
 global:
   - df -h
   - ps aux
+  - cmd: tail -f storage/logs/laravel.log
+    alias: laravel log
 ```
+
+A command with an `alias` is listed by its alias in the prompt's suggestions.
 
 ## Install
 
@@ -124,6 +131,7 @@ Press `?` inside dtree for this list.
 | `↑` / `↓` | pick a recent or saved (★) command |
 | `tab` | complete the highlighted (or first) suggestion to edit it |
 | `ctrl+s` | save the command · forget a saved one |
+| `ctrl+e` | edit a saved command and its alias · save a new one with an alias (`tab` switches field, `enter` saves, `esc` goes back) |
 | `ctrl+u` | clear |
 | `enter` / `esc` | run / cancel |
 | `ctrl+o` | run in the terminal (for `top`, `vim`, REPLs) |
