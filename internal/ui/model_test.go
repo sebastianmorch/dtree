@@ -35,6 +35,10 @@ type fakeClient struct {
 	ignoreInt bool          // commands ignore Ctrl+C
 	execs     []string      // "id: command" of each Exec call
 
+	lifecycle     []string      // "start a1", "stop a1", ... of each call
+	lifecycleErr  error         // returned by Start, Stop and Restart
+	lifecycleHold chan struct{} // when set, state changes wait until it is closed
+
 	mu         sync.Mutex
 	interrupts []bool // force flag of each Interrupt call
 	input      []byte // everything typed into commands
@@ -70,10 +74,13 @@ func newFake() *fakeClient {
 }
 
 func (f *fakeClient) List(_ context.Context, all bool) ([]tree.Container, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := slices.Clone(f.running)
 	if all {
-		return append(append([]tree.Container{}, f.running...), f.all...), nil
+		out = append(out, f.all...)
 	}
-	return f.running, nil
+	return out, nil
 }
 
 func (f *fakeClient) Events(context.Context) (<-chan struct{}, <-chan error) {
@@ -133,6 +140,52 @@ func (f *fakeClient) Exec(_ context.Context, id string, opts docker.ExecOptions)
 		return nil
 	}
 	return &docker.ExecSession{Output: lines, Input: input, Result: result, Interrupt: interrupt}, nil
+}
+
+func (f *fakeClient) Start(_ context.Context, id string) error {
+	return f.setState("start", id, "running", "Up Less than a second")
+}
+
+func (f *fakeClient) Stop(_ context.Context, id string) error {
+	return f.setState("stop", id, "exited", "Exited (0) Less than a second ago")
+}
+
+func (f *fakeClient) Restart(_ context.Context, id string) error {
+	return f.setState("restart", id, "running", "Up Less than a second")
+}
+
+// setState moves a container between the running and stopped lists.
+func (f *fakeClient) setState(verb, id, state, status string) error {
+	if f.lifecycleHold != nil {
+		<-f.lifecycleHold
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lifecycle = append(f.lifecycle, verb+" "+id)
+	if f.lifecycleErr != nil {
+		return f.lifecycleErr
+	}
+	var c tree.Container
+	found := false
+	for _, list := range []*[]tree.Container{&f.running, &f.all} {
+		for i := range *list {
+			if (*list)[i].ID == id {
+				c, found = (*list)[i], true
+				*list = slices.Delete(*list, i, i+1)
+				break
+			}
+		}
+	}
+	if !found {
+		return fmt.Errorf("no such container: %s", id)
+	}
+	c.State, c.Status = state, status
+	if state == "running" {
+		f.running = append(f.running, c)
+	} else {
+		f.all = append(f.all, c)
+	}
+	return nil
 }
 
 // run executes cmd and feeds resulting messages back into the model until

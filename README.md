@@ -104,6 +104,8 @@ Press `?` inside dtree for this list.
 | `s` | shell (bash, falls back to sh) |
 | `x` | run a command (output in a popup; `↑`/`↓` for recent and saved commands) |
 | `X` | show the last command's output |
+| `S` | start / stop the container · on a project, stop its running containers or start them all |
+| `R` | restart the container · on a project, restart its containers |
 | `a` | toggle running / all containers |
 | `r` | refresh |
 | `q` / `ctrl+c` | quit |

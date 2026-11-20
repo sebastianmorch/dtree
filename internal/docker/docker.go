@@ -91,6 +91,11 @@ type Client interface {
 	// stopped through its terminal with Interrupt; cancelling ctx only stops
 	// the stream.
 	Exec(ctx context.Context, id string, opts ExecOptions) (*ExecSession, error)
+	// Start, Stop and Restart change a container's state. Stop and Restart
+	// wait for the container's stop timeout before killing it.
+	Start(ctx context.Context, id string) error
+	Stop(ctx context.Context, id string) error
+	Restart(ctx context.Context, id string) error
 }
 
 // SDK is the Client backed by the Docker Engine API.
@@ -369,6 +374,18 @@ func (s *SDK) Logs(ctx context.Context, id string, opts LogOptions) (<-chan LogL
 func (s *SDK) Inspect(ctx context.Context, id string) ([]byte, error) {
 	_, raw, err := s.cli.ContainerInspectWithRaw(ctx, id, false)
 	return raw, err
+}
+
+func (s *SDK) Start(ctx context.Context, id string) error {
+	return s.cli.ContainerStart(ctx, id, container.StartOptions{})
+}
+
+func (s *SDK) Stop(ctx context.Context, id string) error {
+	return s.cli.ContainerStop(ctx, id, container.StopOptions{})
+}
+
+func (s *SDK) Restart(ctx context.Context, id string) error {
+	return s.cli.ContainerRestart(ctx, id, container.StopOptions{})
 }
 
 func (s *SDK) Exec(ctx context.Context, id string, opts ExecOptions) (*ExecSession, error) {

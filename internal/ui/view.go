@@ -237,7 +237,7 @@ func (m *Model) treeBody(height int) []string {
 			line = gutter + m.projectRow(r, projWidth, p)
 		} else {
 			c := m.tree.Container(r)
-			line = gutter + containerRow(c, cols, p, m.jobs[c.ID])
+			line = gutter + containerRow(c, cols, p, m.jobs[c.ID], m.pending)
 		}
 		line = ansi.Truncate(line, width, "…")
 		if p.selected {
@@ -265,6 +265,9 @@ func (m *Model) projectRow(r tree.Row, nameWidth int, p painter) string {
 	case tree.Failing:
 		countStyle = styleRed
 	}
+	if act, ok := m.projectPending(pr); ok {
+		count, countStyle = act.progress(), styleAccent
+	}
 	nameStyle := styleProject
 	if p.selected {
 		nameStyle = nameStyle.Foreground(colorAccent)
@@ -273,8 +276,9 @@ func (m *Model) projectRow(r tree.Row, nameWidth int, p painter) string {
 		p.paint(styleDim, "  ") + p.paint(countStyle, count)
 }
 
-// containerRow renders a container; j is its last quick command, if any.
-func containerRow(c *tree.Container, cols columns, p painter, j *job) string {
+// containerRow renders a container; j is its last quick command, if any,
+// and pending the start, stop or restart in progress per container ID.
+func containerRow(c *tree.Container, cols columns, p painter, j *job, pending map[string]action) string {
 	dotStyle := styleDim
 	switch {
 	case c.Health() == tree.Degraded:
@@ -297,9 +301,13 @@ func containerRow(c *tree.Container, cols columns, p painter, j *job) string {
 	if !c.Running() {
 		statusStyle = styleYellow
 	}
-	b.WriteString(p.paint(styleDim, "  ") + p.paint(statusStyle, shortStatus(*c)))
-	if icon := healthIcon(*c); icon != "" {
-		b.WriteString(p.paint(styleDim, " "+icon))
+	if a, ok := pending[c.ID]; ok {
+		b.WriteString(p.paint(styleDim, "  ") + p.paint(styleAccent, a.progress()))
+	} else {
+		b.WriteString(p.paint(styleDim, "  ") + p.paint(statusStyle, shortStatus(*c)))
+		if icon := healthIcon(*c); icon != "" {
+			b.WriteString(p.paint(styleDim, " "+icon))
+		}
 	}
 	if j != nil {
 		b.WriteString(p.paint(styleDim, "  ") + j.rowBadge(p))
@@ -577,6 +585,7 @@ var helpSections = []struct {
 		{"s", "shell (bash, falls back to sh)"},
 		{"x", "run a command (output in a popup)"},
 		{"X", "show the last command's output"},
+		{"S / R", "start or stop · restart (container or project)"},
 		{"a", "toggle running / all containers"},
 		{"r", "refresh"},
 		{"q / ctrl+c", "quit"},

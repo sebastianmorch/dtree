@@ -133,12 +133,15 @@ type Model struct {
 	// container's config never changes, so entries never go stale; nil
 	// marks a request in flight.
 	details map[string]*containerDetails
+
+	// pending holds the start, stop or restart running per container ID.
+	pending map[string]action
 }
 
 func New(client docker.Client, showAll bool) *Model {
 	return &Model{
 		client: client, tree: tree.New(), showAll: showAll, width: 80, height: 24,
-		details: map[string]*containerDetails{}, jobs: map[string]*job{}, commands: &config.Commands{},
+		details: map[string]*containerDetails{}, jobs: map[string]*job{}, pending: map[string]action{}, commands: &config.Commands{},
 	}
 }
 
@@ -286,6 +289,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case execDoneMsg:
 		return m, tea.Batch(m.execResult(msg), m.list())
+
+	case lifecycleMsg:
+		return m, m.lifecycleDone(msg)
 	}
 	return m, nil
 }
@@ -369,6 +375,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.startPrompt()
 	case "X":
 		return m.showLastOutput()
+	case "S":
+		return m.toggleRunning()
+	case "R":
+		return m.restartSelected()
 	case "a":
 		m.showAll = !m.showAll
 		return m.list()
