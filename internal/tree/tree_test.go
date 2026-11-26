@@ -148,6 +148,80 @@ func TestNavigationAndFolding(t *testing.T) {
 	}
 }
 
+func TestMoveAndProjectJumps(t *testing.T) {
+	tr := New()
+	tr.Set([]Container{c("a1", "a", "x"), c("a2", "a", "y"), c("b1", "b", "z"), c("c1", "c", "w")})
+	tr.Move(2)
+	if selected(tr) != "a2" {
+		t.Fatalf("move 2 selected %q", selected(tr))
+	}
+	tr.Move(100)
+	if selected(tr) != "c1" {
+		t.Fatalf("move past bottom selected %q", selected(tr))
+	}
+	tr.Move(-100)
+	if selected(tr) != "a" {
+		t.Fatalf("move past top selected %q", selected(tr))
+	}
+
+	tr.Move(1) // a1
+	tr.NextProject()
+	if selected(tr) != "b" {
+		t.Fatalf("next project selected %q", selected(tr))
+	}
+	tr.NextProject()
+	tr.NextProject() // no project below: last row
+	if selected(tr) != "c1" {
+		t.Fatalf("next project at the end selected %q", selected(tr))
+	}
+	tr.PrevProject() // container -> its project
+	if selected(tr) != "c" {
+		t.Fatalf("prev project from container selected %q", selected(tr))
+	}
+	tr.PrevProject()
+	tr.PrevProject()
+	tr.PrevProject() // already on the first project
+	if selected(tr) != "a" {
+		t.Fatalf("prev project at the top selected %q", selected(tr))
+	}
+}
+
+func TestFoldCommands(t *testing.T) {
+	tr := New()
+	tr.Set([]Container{c("a1", "a", "x"), c("a2", "a", "y"), c("b1", "b", "z")})
+	tr.Move(2) // a2
+	tr.CloseFold()
+	if !tr.IsCollapsed("a") || selected(tr) != "a" {
+		t.Fatalf("close fold from container: collapsed %v selected %q", tr.IsCollapsed("a"), selected(tr))
+	}
+	tr.ToggleFold()
+	if tr.IsCollapsed("a") || selected(tr) != "a" {
+		t.Fatalf("toggle fold on project: collapsed %v selected %q", tr.IsCollapsed("a"), selected(tr))
+	}
+	tr.Move(1) // a1
+	tr.ToggleFold()
+	if !tr.IsCollapsed("a") || selected(tr) != "a" {
+		t.Fatalf("toggle fold from container: collapsed %v selected %q", tr.IsCollapsed("a"), selected(tr))
+	}
+
+	tr.SetAllCollapsed(false)
+	tr.Bottom() // b1
+	tr.SetAllCollapsed(true)
+	if got := names(tr); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("collapse all rows = %q", got)
+	}
+	if selected(tr) != "b" {
+		t.Fatalf("collapse all moved cursor to %q, want its project", selected(tr))
+	}
+	tr.SetAllCollapsed(false)
+	if got := names(tr); !reflect.DeepEqual(got, []string{"a", "  x", "  y", "b", "  z"}) {
+		t.Fatalf("expand all rows = %q", got)
+	}
+	if selected(tr) != "b" {
+		t.Fatalf("expand all moved cursor to %q", selected(tr))
+	}
+}
+
 func TestSetPreservesCursorByKey(t *testing.T) {
 	tr := New()
 	tr.Set([]Container{c("b1", "b", "z"), c("c1", "c", "w")})
@@ -230,6 +304,12 @@ func TestEmptyTree(t *testing.T) {
 	tr.Expand()
 	tr.Collapse()
 	tr.Toggle()
+	tr.Move(3)
+	tr.NextProject()
+	tr.PrevProject()
+	tr.CloseFold()
+	tr.ToggleFold()
+	tr.SetAllCollapsed(true)
 	if _, ok := tr.Selected(); ok {
 		t.Fatal("empty tree has a selection")
 	}
