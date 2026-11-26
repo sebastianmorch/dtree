@@ -502,6 +502,96 @@ func TestVimAndArrowNavigation(t *testing.T) {
 	}
 }
 
+func TestVimPageKeys(t *testing.T) {
+	m, f := setup(t)
+	for i := 0; i < 30; i++ {
+		f.running = append(f.running, tree.Container{
+			ID: fmt.Sprintf("x%02d", i), Name: fmt.Sprintf("svc-%02d", i), Image: "img", State: "running", Status: "Up 1 hour",
+		})
+	}
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 16})
+	press(t, m, "r")
+	// The cursor keeps its place on screen: the view scrolls with it.
+	cursorOnTopRow := func(key string) {
+		t.Helper()
+		if s := strings.Split(screen(m), "\n"); !strings.Contains(s[1], "┃") {
+			t.Fatalf("%s: selected row should stay at the top of the list:\n%s", key, strings.Join(s, "\n"))
+		}
+	}
+	for _, tt := range []struct {
+		key  string
+		rows func() int
+	}{
+		{"ctrl+d", func() int { return m.listHeight / 2 }},
+		{"ctrl+u", func() int { return -(m.listHeight / 2) }},
+		{"ctrl+f", func() int { return m.listHeight }},
+		{"ctrl+b", func() int { return -m.listHeight }},
+	} {
+		screen(m) // the page size comes from the last render
+		want := m.tree.Cursor() + tt.rows()
+		press(t, m, tt.key)
+		if got := m.tree.Cursor(); got != want {
+			t.Fatalf("%s: cursor %d, want %d", tt.key, got, want)
+		}
+		cursorOnTopRow(tt.key)
+	}
+	press(t, m, "G", "ctrl+f")
+	if c := m.tree.SelectedContainer(); c == nil || c.ID != "x29" {
+		t.Fatalf("ctrl+f at the bottom selected %+v", c)
+	}
+	press(t, m, "g", "ctrl+b")
+	if m.tree.Cursor() != 0 {
+		t.Fatalf("ctrl+b at the top: cursor %d", m.tree.Cursor())
+	}
+}
+
+func TestVimProjectAndFoldKeys(t *testing.T) {
+	m, _ := setup(t)
+	press(t, m, "j", "}")
+	if r, _ := m.tree.Selected(); !r.IsProject() || m.tree.Project(r).Name != tree.Standalone {
+		t.Fatal("} should move to the next project")
+	}
+	press(t, m, "{")
+	if r, _ := m.tree.Selected(); !r.IsProject() || m.tree.Project(r).Name != "shop" {
+		t.Fatal("{ should move to the previous project")
+	}
+
+	press(t, m, "z")
+	if !strings.Contains(screen(m), "zM close all") {
+		t.Fatalf("z should list the fold keys:\n%s", screen(m))
+	}
+	press(t, m, "M")
+	if s := screen(m); !strings.Contains(s, "▸ shop") || !strings.Contains(s, "▸ (standalone)") {
+		t.Fatalf("zM should collapse all projects:\n%s", s)
+	}
+	press(t, m, "z", "R", "j", "z", "c")
+	if !m.tree.IsCollapsed("shop") || m.tree.SelectedContainer() != nil || m.tree.IsCollapsed(tree.Standalone) {
+		t.Fatal("zc on a container should collapse its project and select it")
+	}
+	press(t, m, "z", "a")
+	if m.tree.IsCollapsed("shop") {
+		t.Fatal("za should toggle the project open")
+	}
+	press(t, m, "z", "o", "j", "z", "m")
+	if !m.tree.IsCollapsed("shop") || !m.tree.IsCollapsed(tree.Standalone) {
+		t.Fatal("zm should collapse all projects")
+	}
+	press(t, m, "z", "r")
+	if m.tree.IsCollapsed("shop") || m.tree.IsCollapsed(tree.Standalone) {
+		t.Fatal("zr should expand all projects")
+	}
+
+	// Another key after z is handled as usual; esc only cancels the z.
+	press(t, m, "g", "z", "j")
+	if c := m.tree.SelectedContainer(); c == nil || c.ID != "a1" || m.prefix != "" {
+		t.Fatalf("z then j selected %+v, prefix %q", c, m.prefix)
+	}
+	press(t, m, "/", "s", "h", "o", "p", "enter", "z", "esc")
+	if m.prefix != "" || m.tree.Filter() != "shop" {
+		t.Fatalf("z then esc: prefix %q, filter %q", m.prefix, m.tree.Filter())
+	}
+}
+
 func TestActionsOnProjectRowShowStatus(t *testing.T) {
 	m, _ := setup(t)
 	for _, k := range []string{"L", "i", "s"} {
@@ -618,7 +708,7 @@ func TestEventTriggersRefresh(t *testing.T) {
 func TestHelpOverlay(t *testing.T) {
 	m, _ := setup(t)
 	press(t, m, "?")
-	if !strings.Contains(screen(m), "toggle running / all containers") {
+	if !strings.Contains(screen(m), "previous / next project") {
 		t.Fatal("help not shown")
 	}
 	press(t, m, "x")

@@ -311,6 +311,33 @@ func (t *Tree) Top() { t.cursor = 0 }
 
 func (t *Tree) Bottom() { t.cursor = max(0, len(t.rows)-1) }
 
+// Move moves the cursor n rows down, or up for a negative n, stopping at
+// the first and last row.
+func (t *Tree) Move(n int) { t.cursor = max(0, min(t.cursor+n, len(t.rows)-1)) }
+
+// NextProject moves the cursor to the next project row, or to the last row
+// when there is none.
+func (t *Tree) NextProject() {
+	for i := t.cursor + 1; i < len(t.rows); i++ {
+		if t.rows[i].IsProject() {
+			t.cursor = i
+			return
+		}
+	}
+	t.Bottom()
+}
+
+// PrevProject moves the cursor to the project row above it: the parent
+// project from a container.
+func (t *Tree) PrevProject() {
+	for i := t.cursor - 1; i >= 0; i-- {
+		if t.rows[i].IsProject() {
+			t.cursor = i
+			return
+		}
+	}
+}
+
 // Expand expands the selected project. It is a no-op on container rows.
 func (t *Tree) Expand() {
 	r, ok := t.Selected()
@@ -341,6 +368,37 @@ func (t *Tree) Toggle() {
 		return
 	}
 	t.setCollapsed(r.Project, !t.folds()[t.projects[r.Project].Name])
+}
+
+// CloseFold collapses the selected project, or the project of the selected
+// container, and moves the cursor to the project row.
+func (t *Tree) CloseFold() {
+	if r, ok := t.Selected(); ok {
+		t.setCollapsed(r.Project, true)
+	}
+}
+
+// ToggleFold flips the expand state of the selected project, or collapses
+// the project of the selected container.
+func (t *Tree) ToggleFold() {
+	if r, ok := t.Selected(); ok {
+		t.setCollapsed(r.Project, !t.folds()[t.projects[r.Project].Name])
+	}
+}
+
+// SetAllCollapsed collapses or expands every project. A cursor on a
+// container that gets hidden moves to its project row.
+func (t *Tree) SetAllCollapsed(collapsed bool) {
+	t.update(func() {
+		folds := t.folds()
+		for _, p := range t.projects {
+			if collapsed {
+				folds[p.Name] = true
+			} else {
+				delete(folds, p.Name)
+			}
+		}
+	})
 }
 
 func (t *Tree) setCollapsed(project int, collapsed bool) {

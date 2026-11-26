@@ -97,6 +97,11 @@ Press `?` inside dtree for this list.
 | `enter` | toggle project · shell on container |
 | `space` | toggle project · logs on container |
 | `g` / `G` | top / bottom |
+| `ctrl+d` / `ctrl+u` | half page down / up |
+| `ctrl+f` / `ctrl+b` | page down / up |
+| `{` / `}` | previous / next project |
+| `zo` / `zc` / `za` | open / close / toggle the project (also from one of its containers) |
+| `zR` / `zM` | open / close all projects (`zr` / `zm` work too) |
 | `/` or `f` | filter by container or project name |
 | `esc` | clear filter |
 | `L` | logs |

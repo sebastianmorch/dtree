@@ -35,6 +35,7 @@ func (m *Model) treeView() string {
 	avail := max(3, m.height-1) // the last row is the hint bar
 	info := m.infoPanel(avail)
 	listHeight := max(1, avail-len(info)-2)
+	m.listHeight = listHeight
 	list := panel{
 		title:    m.treeTitle(),
 		topRight: m.connStatus(),
@@ -137,6 +138,10 @@ func (m *Model) treeFooter() string {
 		hints := hintBar([][2]string{{"enter", "keep"}, {"esc", "clear"}, {"↑/↓", "move"}},
 			max(0, m.width-ansi.StringWidth(input)))
 		return ansi.Truncate(input+hints, m.width, "…")
+	}
+	if m.prefix == "z" {
+		return hintBar([][2]string{{"zo", "open"}, {"zc", "close"}, {"za", "toggle"},
+			{"zR", "open all"}, {"zM", "close all"}, {"esc", "cancel"}}, m.width)
 	}
 	if m.status != "" {
 		if m.statusErr {
@@ -578,6 +583,11 @@ var helpSections = []struct {
 		{"enter", "toggle project · shell on container"},
 		{"space", "toggle project · logs on container"},
 		{"g / G", "top / bottom"},
+		{"^d / ^u", "half page down / up"},
+		{"^f / ^b", "page down / up"},
+		{"{ / }", "previous / next project"},
+		{"zo zc za", "open / close / toggle project"},
+		{"zR / zM", "open / close all projects"},
 		{"/ or f", "filter by container or project name"},
 		{"esc", "clear filter"},
 		{"L", "logs"},

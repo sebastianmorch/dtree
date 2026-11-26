@@ -92,10 +92,12 @@ type Model struct {
 
 	width, height int
 	treeOffset    int // first visible tree row
+	listHeight    int // tree rows on screen at the last render, for the page keys
 	mode          mode
 	viewer        *viewer
 	help          bool
-	filtering     bool // typing a filter query after /
+	filtering     bool   // typing a filter query after /
+	prefix        string // "z" while waiting for the second key of a fold command
 
 	status    string
 	statusErr bool
@@ -328,6 +330,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if m.filtering {
 		return m.handleFilterKey(msg)
 	}
+	if m.prefix == "z" {
+		m.prefix = ""
+		if m.fold(key) {
+			return nil
+		}
+	}
 
 	switch key {
 	case "q", "ctrl+c":
@@ -348,6 +356,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		m.tree.Top()
 	case "G", "end":
 		m.tree.Bottom()
+	case "ctrl+d":
+		m.scrollTree(max(1, m.listHeight/2))
+	case "ctrl+u":
+		m.scrollTree(-max(1, m.listHeight/2))
+	case "ctrl+f":
+		m.scrollTree(max(1, m.listHeight))
+	case "ctrl+b":
+		m.scrollTree(-max(1, m.listHeight))
+	case "}":
+		m.tree.NextProject()
+	case "{":
+		m.tree.PrevProject()
+	case "z":
+		m.prefix = "z"
 	case "enter":
 		if c := m.tree.SelectedContainer(); c != nil {
 			return m.shell(*c, "", false)
@@ -388,6 +410,35 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		m.help = true
 	}
 	return nil
+}
+
+// fold runs the key after z: vim's fold commands open and close projects.
+// With one level of folds, zr and zm already open and close all of them,
+// like zR and zM. It reports whether it used the key; esc cancels the z.
+func (m *Model) fold(key string) bool {
+	switch key {
+	case "o":
+		m.tree.Expand()
+	case "c":
+		m.tree.CloseFold()
+	case "a":
+		m.tree.ToggleFold()
+	case "r", "R":
+		m.tree.SetAllCollapsed(false)
+	case "m", "M":
+		m.tree.SetAllCollapsed(true)
+	case "esc":
+	default:
+		return false
+	}
+	return true
+}
+
+// scrollTree moves the cursor and the view n rows, like vim's ctrl+d and
+// ctrl+f, so the cursor keeps its place on screen.
+func (m *Model) scrollTree(n int) {
+	m.treeOffset = max(0, m.treeOffset+n)
+	m.tree.Move(n)
 }
 
 // handleFilterKey edits the filter query; the tree filters as you type.
